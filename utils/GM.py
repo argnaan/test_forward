@@ -19,5 +19,5 @@ n_kv_heads = args.n_kv_heads
 vocab_size = args.vocab_size
 seq_len = args.seq_len
 
-subprocess.run(["utils/genRndWeights", str(dim), str(hidden_dim), str(n_layers), str(n_heads), str(n_kv_heads), str(vocab_size), str(seq_len)], capture_output=True)
-
+subprocess.run(["utils/genRndWeights", str(dim), str(hidden_dim), str(n_layers), str(n_heads), str(n_kv_heads), str(vocab_size), str(seq_len)])
+subprocess.run(["utils/run", "utils/rnd_weights.bin", "-z", "utils/tokenizer.bin"])

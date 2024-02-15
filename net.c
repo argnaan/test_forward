@@ -1,6 +1,8 @@
 #include "pmsis.h"
 #include <math.h>
+#include <string.h>
 #include "conf_and_weights.h"
+#include "token_and_logits.h"
 
 // ----------------------------------------------------------------------------
 // Transformer model
@@ -113,14 +115,24 @@ void read_checkpoint(Config* config, TransformerWeights* weights, int* fd, float
         shared_weights = 0;
         config->vocab_size = - config->vocab_size;
     }
-    float* weights_ptr = weights_list;
+    float* weights_ptr = (float*) weights_list;
     memory_map_weights(weights, config, weights_ptr, shared_weights);
 }
 
 void malloc_run_state(RunState* s, Config* p) {
+    s->x = X;
+    s->xb = XB;
+    s->xb2 = XB2;
+    s->hb = HB;
+    s->hb2 = HB2;
+    s->q = Q;
+    s->key_cache = KEY_CACHE;
+    s->value_cache = VALUE_CACHE;
+    s->att = ATT;
+    s->logits = LOGITS;
+    /*
     // we calloc instead of malloc to keep valgrind happy
-    int kv_dim = (p->dim * p->n_kv_heads) / p->n_heads;
-    s->x = xb;
+    s->x = pi_l2_malloc(p->dim * sizeof(float));
     s->xb = pi_l2_malloc(p->dim * sizeof(float));
     s->xb2 = pi_l2_malloc(p->dim * sizeof(float));
     s->hb = pi_l2_malloc(p->hidden_dim * sizeof(float));
@@ -137,7 +149,7 @@ void malloc_run_state(RunState* s, Config* p) {
         exit(1);
     }else{
         //printf("L2 malloc eseguita con successo\n");
-    }
+    }*/
 }
 
 void build_transformer(Transformer *t) {
@@ -336,8 +348,20 @@ void net_step(){
     build_transformer(&transformer);
     if (steps == 0 || steps > transformer.config.seq_len) steps = transformer.config.seq_len; // ovrerride to ~max length
     
-    float* logits;
-    logits = forward(&transformer, 1, 0);
-    printf("*logits (con token=1 e pos=0): %f\n", *logits);
+    float* logits_calc;
+    printf("Differenza tra il valore di logits calcolato e quello originale");
+    float diff_media=0;
+    float logit_media=0;
+    float diff;
+    for(int pos=0;pos<steps;pos++){
+        logits_calc = forward(&transformer, TOKEN[pos], pos);
+        diff = *logits_calc - LOGITS_RUN[pos];
+        if(diff<0) diff=-diff;
+        logit_media+= *logits_calc>0? *logits_calc : -*logits_calc;
+        printf("Pos: %3d Token: %3d Logits_calc: %3.10f (%#x) Logits_RUN: %3.10f (%#x) Differenza: %3.10f \n", pos, TOKEN[pos], *logits_calc, *(unsigned int*) logits_calc, LOGITS_RUN[pos], *(unsigned int*) &LOGITS_RUN[pos], diff);
+        diff_media+=diff;
+    }
+    printf("\nDifferenza media: %f\n\n", diff_media/steps);
+    printf("Logits medio: %f\n\n", logit_media/steps);
     return;
 }

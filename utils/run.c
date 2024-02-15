@@ -744,10 +744,16 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
     int next;        // will store the next token in the sequence
     int token = prompt_tokens[0]; // kick off with the first token in the prompt
     int pos = 0;     // position in the sequence
+    
+    int* all_tokens = malloc(sizeof(int)*steps);
+    float* all_logits = malloc(sizeof(float)* steps);
+    
     while (pos < steps) {
 
         // forward the transformer to get logits for the next token
         float* logits = forward(transformer, token, pos);
+        all_tokens[pos] = token;
+        all_logits[pos] = *logits;
         // advance the state machine
         if (pos < num_prompt_tokens - 1) {
             // if we are still processing the input prompt, force the next prompt token
@@ -759,11 +765,11 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
         pos++;
 
         // data-dependent terminating condition: the BOS (=1) token delimits sequences
-        if (next == 1) { break; }
+        // if (next == 1) { break; }
 
         // print the token as string, decode it with the Tokenizer object
         char* piece = decode(tokenizer, token, next);
-        safe_printf(piece); // same as printf("%s", piece), but skips "unsafe" bytes
+        // safe_printf(piece); // same as printf("%s", piece), but skips "unsafe" bytes
         fflush(stdout);
         token = next;
 
@@ -771,6 +777,26 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
         if (start == 0) { start = time_in_ms(); }
     }
     printf("\n");
+
+    // CODICE AGGIUNTO: 
+    FILE* fh = fopen("token_and_logits.h", "w");
+    fprintf(fh, "PI_L2 int TOKEN[%d] = {", steps);
+    int i=0;
+    for(i=0;i<steps-1;i++){
+        fprintf(fh, "%d, ", all_tokens[i]);
+        if(i%10 == 9)
+            fprintf(fh, "\n");
+    }
+    fprintf(fh, "%d};\n", all_tokens[i]);
+
+    fprintf(fh, "PI_L2 float LOGITS_RUN[%d] = {", steps);
+    for(i=0;i<steps-1;i++){
+        fprintf(fh, "%.10f, ", all_logits[i]);
+        if(i%10 == 9)
+            fprintf(fh, "\n");
+    }
+    fprintf(fh,"%.10f};\n", all_logits[i]);
+    fclose(fh);
 
     // report achieved tok/s (pos-1 because the timer starts after first iteration)
     if (pos > 1) {
@@ -954,7 +980,6 @@ int main(int argc, char *argv[]) {
     build_sampler(&sampler, transformer.config.vocab_size, temperature, topp, rng_seed);
 
     // run!
-    /*
     if (strcmp(mode, "generate") == 0) {
         generate(&transformer, &tokenizer, &sampler, prompt, steps);
     } else if (strcmp(mode, "chat") == 0) {
@@ -962,12 +987,7 @@ int main(int argc, char *argv[]) {
     } else {
         fprintf(stderr, "unknown mode: %s\n", mode);
         error_usage();
-    }*/
-
-    float* logits;
-    logits = forward(&transformer, 1, 0);
-    printf("In run.c *logits (con pos=0 e token=1): %f\n", *logits);
-
+    }
     // memory and file handles cleanup
     free_sampler(&sampler);
     free_tokenizer(&tokenizer);

@@ -14,10 +14,7 @@
  * limitations under the License.
  */
 
-
 #include "pmsis.h"
-#include "stdio.h"
-#include "stdlib.h"
 #include "net.h"
 
 /*
