@@ -5,21 +5,24 @@ HIDDEN_DIM ?= 174
 N_LAYERS ?= 1
 N_HEADS ?= 8
 N_KV_HEADS ?= 4
-VOCAB_SIZE ?= 64
+VOCAB_SIZE ?= 512
 SEQ_LEN ?= 128	
-STEPS ?= $(SEQ_LEN)	
+
+STEPS ?= $(SEQ_LEN)
+TEMPERATURE ?= 10
+RND_SEED ?= 42	
 
 NUM_CORES?=1
 
 get_golden:
 	cd utils && gcc genRndWeights.c -o genRndWeights 
 	cd utils && gcc run.c -o run -lm
-	python3 utils/GM.py --dim $(DIM) --hidden_dim $(HIDDEN_DIM) --n_layers $(N_LAYERS) --n_heads $(N_HEADS) --n_kv_heads $(N_KV_HEADS) --vocab_size $(VOCAB_SIZE) --seq_len $(SEQ_LEN) --steps $(STEPS)
+	python3 utils/GM.py --dim $(DIM) --hidden_dim $(HIDDEN_DIM) --n_layers $(N_LAYERS) --n_heads $(N_HEADS) --n_kv_heads $(N_KV_HEADS) --vocab_size $(VOCAB_SIZE) --seq_len $(SEQ_LEN) --steps $(STEPS) --temperature $(TEMPERATURE) --rnd_seed $(RND_SEED)
 
 
 TRAIN_LIB=/home/andrea/PULP-TrainLib-Tutorial/pulp-trainlib/lib
 TRAIN_LIB_SRCS=$(TRAIN_LIB)/sources
-APP_SRCS = main.c net.c
+APP_SRCS = main.c net.c quicksort.c
 
 APP_LDFLAGS += -lm 
 APP_CFLAGS += -DNUM_CORES=${NUM_CORES}

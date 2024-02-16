@@ -4,6 +4,7 @@
 
 #define WEIGHTS_BIN "utils/rnd_weights.bin"
 #define WEIGHTS_HEDAER "conf_and_weights.h"
+#define TOKENIZER_PATH "utils/tokenizer.bin"
 
 typedef struct {
     int dim; // transformer dimension
@@ -15,16 +16,36 @@ typedef struct {
     int seq_len; // max sequence length
 } Config;
 
+typedef struct {
+    float prob;
+    int index;
+} ProbIndex;
+
+typedef struct {
+    char *str;
+    int id;
+} TokenIndex;
+
+typedef struct {
+    char** vocab;
+    float* vocab_scores;
+    TokenIndex *sorted_vocab;
+    int vocab_size;
+    unsigned int max_token_length;
+    unsigned char byte_pieces[512]; // stores all single-byte strings
+} Tokenizer;
+
 int main(int argc, char* argv[]){
     srand(time(NULL));
 
-    if(argc!=9){
-        printf("Errore nella generazione dei pesi\nargc=%d\n", argc);
+    if(argc!=11){
+        printf("Errore nella generazione dei pesi\nargc è %d ma deve essere 11\n", argc);
         exit(1);
     }
 
     Config c;
-    int steps;
+    int steps, rnd_seed;
+    float temperature;
     sscanf(argv[1], "%d", &c.dim);
     sscanf(argv[2], "%d", &c.hidden_dim);
     sscanf(argv[3], "%d", &c.n_layers);
@@ -33,6 +54,8 @@ int main(int argc, char* argv[]){
     sscanf(argv[6], "%d", &c.vocab_size);
     sscanf(argv[7], "%d", &c.seq_len);
     sscanf(argv[8], "%d", &steps);
+    sscanf(argv[9], "%f", &temperature);
+    sscanf(argv[10], "%d", &rnd_seed);
 
     int head_size = c.dim / c.n_heads;
     // numero di pesi da generare: calcolato in base alla descrizione della struttura dati TransformerWeights
@@ -72,7 +95,9 @@ int main(int argc, char* argv[]){
     fprintf(fh, "#define VOCAB_SIZE %d\n", c.vocab_size);
     fprintf(fh, "#define SEQ_LEN %d\n", c.seq_len);
     fprintf(fh, "#define KV_DIM %d\n", c.dim * c.n_kv_heads / c.n_heads);
-    fprintf(fh, "#define STEPS %d\n\n", steps);
+    fprintf(fh, "#define STEPS %d\n", steps);
+    fprintf(fh, "#define TEMPERATURE %f\n", temperature);
+    fprintf(fh, "#define RND_SEED %d\n\n", rnd_seed);
 
     fprintf(fh,"// Allocazioni per il RunState\n");
     fprintf(fh, "PI_L2 float X [DIM];\n");
@@ -84,8 +109,38 @@ int main(int argc, char* argv[]){
     fprintf(fh, "PI_L2 float KEY_CACHE [N_LAYERS*SEQ_LEN*KV_DIM];\n");
     fprintf(fh, "PI_L2 float VALUE_CACHE [N_LAYERS*SEQ_LEN*KV_DIM];\n");
     fprintf(fh, "PI_L2 float ATT[N_HEADS*SEQ_LEN];\n");
-    fprintf(fh, "PI_L2 float LOGITS [VOCAB_SIZE];\n\n");
+    fprintf(fh, "PI_L2 float LOGITS [VOCAB_SIZE];\n");
+    fprintf(fh, "PI_L2 char PROB_INDEX [VOCAB_SIZE*%ld];\n\n", sizeof(ProbIndex));
 
+    Tokenizer t;
+    FILE *file_tok = fopen(TOKENIZER_PATH, "rb");
+    t.vocab = (char**) malloc(c.vocab_size*sizeof(char*));
+    t.vocab_scores = (float*) malloc(c.vocab_size*sizeof(float));
+    for (int i = 0; i < 256; i++) {
+        t.byte_pieces[i * 2] = (unsigned char)i;
+        t.byte_pieces[i * 2 + 1] = '\0';
+    }
+    if(file_tok == NULL){
+        printf("Errore: impossible aprire il file %s\n", TOKENIZER_PATH);
+        exit(1);
+    }
+    fread(&t.max_token_length, sizeof(int), 1, file_tok);
+    int len;
+    for(int i=0; i<c.vocab_size; i++){
+        fread(t.vocab_scores+i, sizeof(float), 1, file_tok);
+        fread(&len, sizeof(int), 1, file_tok);
+        t.vocab[i] = (char *)malloc(len+1);
+        fread(&t.vocab[i], len, 1, file_tok);
+        break;
+        t.vocab[i][len] = '\0';
+        printf("%s %d\n", t.vocab[i], len);
+
+    }
+    fclose(file_tok);
+
+    fprintf(fh, "// Allocazioni per il tokenizer\n");
+    fprintf(fh, "PI_L2 char* VOCAB [VOCAB_SIZE]\n");
+    fprintf(fh, "PI_L2 char float VOCAB_SCORES [VOCAB_SIZE]\n");
 
     int i;
     fprintf(fh, "PI_L2 unsigned int weights_list[%d] = { ", w_dim);

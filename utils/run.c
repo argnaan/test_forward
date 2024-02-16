@@ -395,6 +395,8 @@ void build_tokenizer(Tokenizer* t, char* tokenizer_path, int vocab_size) {
     }
     // read in the file
     FILE *file = fopen(tokenizer_path, "rb");
+    // FILE* vocabolario = fopen("vocabolario.txt", "w");
+
     if (!file) { fprintf(stderr, "couldn't load %s\n", tokenizer_path); exit(EXIT_FAILURE); }
     if (fread(&t->max_token_length, sizeof(int), 1, file) != 1) { fprintf(stderr, "failed read\n"); exit(EXIT_FAILURE); }
     int len;
@@ -404,6 +406,8 @@ void build_tokenizer(Tokenizer* t, char* tokenizer_path, int vocab_size) {
         t->vocab[i] = (char *)malloc(len + 1);
         if (fread(t->vocab[i], len, 1, file) != 1) { fprintf(stderr, "failed read\n"); exit(EXIT_FAILURE); }
         t->vocab[i][len] = '\0'; // add the string terminating token
+        
+        // fprintf(vocabolario, "%s %d\n", t->vocab[i], len);
     }
     fclose(file);
 }
@@ -938,8 +942,8 @@ int main(int argc, char *argv[]) {
     // default parameters
     char *checkpoint_path = NULL;  // e.g. out/model.bin
     char *tokenizer_path = "tokenizer.bin";
-    float temperature = 1.0f;   // 0.0 = greedy deterministic. 1.0 = original. don't set higher
-    float topp = 0.9f;          // top-p in nucleus sampling. 1.0 = off. 0.9 works well, but slower
+    float temperature = .0f;   // 0.0 = greedy deterministic. 1.0 = original. don't set higher
+    float topp = 1.0f;          // top-p in nucleus sampling. 1.0 = off. 0.9 works well, but slower
     int steps = 256;            // number of steps to run for
     char *prompt = NULL;        // prompt string
     unsigned long long rng_seed = 0; // seed rng with time by default
@@ -970,7 +974,6 @@ int main(int argc, char *argv[]) {
     if (temperature < 0.0) temperature = 0.0;
     if (topp < 0.0 || 1.0 < topp) topp = 0.9;
     if (steps < 0) steps = 0;
-
     // build the Transformer via the model .bin file
     Transformer transformer;
     build_transformer(&transformer, checkpoint_path);

@@ -37,11 +37,11 @@ int main () {
       return -1;
   }
 
-  printf("\nLaunching training procedure...\n");
+  printf("\nLaunching net.c...\n");
   pi_cluster_send_task_to_cl(&cluster_dev, pi_cluster_task(&cl_task, net_step, NULL));
 
 
-  printf("\nNet training successful!\n");
+  printf("\nnet.c successful!\n");
   pi_cluster_close(&cluster_dev);
 
   pmsis_exit(0);
