@@ -49,7 +49,7 @@ typedef struct {
     float *k; // key (dim,)
     float *v; // value (dim,)
     float *att; // buffer for scores/attention values (n_heads, seq_len)
-    float *logits; // output logits
+    float *logits; // output logits (vocab_size, )
     // kv cache
     float* key_cache;   // (layer, seq_len, dim)
     float* value_cache; // (layer, seq_len, dim)
@@ -341,27 +341,30 @@ float* forward(Transformer* transformer, int token, int pos) {
 
 
 void net_step(){
-    printf("in net_Step\n");
-    int steps = 256; //number of steps to run for
+    int steps = STEPS; //number of steps to run for
     Transformer transformer;
     //build_transformer(&transformer, checkpoint_path);
     build_transformer(&transformer);
     if (steps == 0 || steps > transformer.config.seq_len) steps = transformer.config.seq_len; // ovrerride to ~max length
     
-    float* logits_calc;
-    printf("Differenza tra il valore di logits calcolato e quello originale");
-    float diff_media=0;
-    float logit_media=0;
-    float diff;
+    float* log;
+    float diff[VOCAB_SIZE];
+    float d, d_tot=0;
     for(int pos=0;pos<steps;pos++){
-        logits_calc = forward(&transformer, TOKEN[pos], pos);
-        diff = *logits_calc - LOGITS_RUN[pos];
-        if(diff<0) diff=-diff;
-        logit_media+= *logits_calc>0? *logits_calc : -*logits_calc;
-        printf("Pos: %3d Token: %3d Logits_calc: %3.10f (%#x) Logits_RUN: %3.10f (%#x) Differenza: %3.10f \n", pos, TOKEN[pos], *logits_calc, *(unsigned int*) logits_calc, LOGITS_RUN[pos], *(unsigned int*) &LOGITS_RUN[pos], diff);
-        diff_media+=diff;
+        log = forward(&transformer, TOKEN[pos], pos);
+        diff[pos] = 0;
+        for(int j=0;j<VOCAB_SIZE;j++){
+            d = log[j] - LOGITS_RUN[pos][j];
+            //printf("log calcolato: %3.6f log run[j]: %3.6f\n", log[j], LOGITS_RUN[pos][j]);
+            if(d>0)
+                diff[pos]+=d;
+            else
+                diff[pos]-=d;
+        }
+        diff[pos]/=VOCAB_SIZE;
+        d_tot+=diff[pos];
+        printf("Differenza media allo step %3d: %f\n", pos, diff[pos]);       
     }
-    printf("\nDifferenza media: %f\n\n", diff_media/steps);
-    printf("Logits medio: %f\n\n", logit_media/steps);
+    printf("\nDifferenza media: %f\n\n", d_tot/steps);
     return;
 }

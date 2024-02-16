@@ -1,0 +1,6 @@
+conf_and_weights.h
+token_and_logits.h
+BUILD/
+utils/genRndWeights
+utils/rnd_weights.bin
+utils/run

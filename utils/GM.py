@@ -9,6 +9,7 @@ parser.add_argument("--n_heads", type=int, default=8)
 parser.add_argument("--n_kv_heads", type=int, default=4)
 parser.add_argument("--vocab_size", type=int, default=512)
 parser.add_argument("--seq_len", type=int, default=512)
+parser.add_argument("--steps", type=int, default=256)
 args = parser.parse_args()
 
 dim = args.dim
@@ -18,6 +19,7 @@ n_heads = args.n_heads
 n_kv_heads = args.n_kv_heads
 vocab_size = args.vocab_size
 seq_len = args.seq_len
+steps = args.steps
 
-subprocess.run(["utils/genRndWeights", str(dim), str(hidden_dim), str(n_layers), str(n_heads), str(n_kv_heads), str(vocab_size), str(seq_len)])
+subprocess.run(["utils/genRndWeights", str(dim), str(hidden_dim), str(n_layers), str(n_heads), str(n_kv_heads), str(vocab_size), str(seq_len), str(steps)])
 subprocess.run(["utils/run", "utils/rnd_weights.bin", "-z", "utils/tokenizer.bin"])

@@ -745,15 +745,20 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
     int token = prompt_tokens[0]; // kick off with the first token in the prompt
     int pos = 0;     // position in the sequence
     
+    int voc_size = transformer->config.vocab_size;
     int* all_tokens = malloc(sizeof(int)*steps);
-    float* all_logits = malloc(sizeof(float)* steps);
+    float* all_logits = malloc(sizeof(float)* steps* voc_size);
     
     while (pos < steps) {
 
         // forward the transformer to get logits for the next token
         float* logits = forward(transformer, token, pos);
+        
+        // codice aggiunto:
+        for(int i=0;i<voc_size;i++)
+            all_logits[pos*voc_size +i] = logits[i];
         all_tokens[pos] = token;
-        all_logits[pos] = *logits;
+        
         // advance the state machine
         if (pos < num_prompt_tokens - 1) {
             // if we are still processing the input prompt, force the next prompt token
@@ -789,8 +794,8 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
     }
     fprintf(fh, "%d};\n", all_tokens[i]);
 
-    fprintf(fh, "PI_L2 float LOGITS_RUN[%d] = {", steps);
-    for(i=0;i<steps-1;i++){
+    fprintf(fh, "PI_L2 float LOGITS_RUN[%d][%d] = {", steps, voc_size);
+    for(i=0;i<steps*voc_size-1;i++){
         fprintf(fh, "%.10f, ", all_logits[i]);
         if(i%10 == 9)
             fprintf(fh, "\n");

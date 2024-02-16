@@ -18,12 +18,13 @@ typedef struct {
 int main(int argc, char* argv[]){
     srand(time(NULL));
 
-    if(argc!=8){
+    if(argc!=9){
         printf("Errore nella generazione dei pesi\nargc=%d\n", argc);
         exit(1);
     }
 
     Config c;
+    int steps;
     sscanf(argv[1], "%d", &c.dim);
     sscanf(argv[2], "%d", &c.hidden_dim);
     sscanf(argv[3], "%d", &c.n_layers);
@@ -31,6 +32,7 @@ int main(int argc, char* argv[]){
     sscanf(argv[5], "%d", &c.n_kv_heads);
     sscanf(argv[6], "%d", &c.vocab_size);
     sscanf(argv[7], "%d", &c.seq_len);
+    sscanf(argv[8], "%d", &steps);
 
     int head_size = c.dim / c.n_heads;
     // numero di pesi da generare: calcolato in base alla descrizione della struttura dati TransformerWeights
@@ -69,7 +71,8 @@ int main(int argc, char* argv[]){
     fprintf(fh, "#define N_KV_HEADS %d\n", c.n_kv_heads);
     fprintf(fh, "#define VOCAB_SIZE %d\n", c.vocab_size);
     fprintf(fh, "#define SEQ_LEN %d\n", c.seq_len);
-    fprintf(fh, "#define KV_DIM %d\n\n", c.dim * c.n_kv_heads / c.n_heads);
+    fprintf(fh, "#define KV_DIM %d\n", c.dim * c.n_kv_heads / c.n_heads);
+    fprintf(fh, "#define STEPS %d\n\n", steps);
 
     fprintf(fh,"// Allocazioni per il RunState\n");
     fprintf(fh, "PI_L2 float X [DIM];\n");

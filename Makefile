@@ -1,19 +1,20 @@
 APP = test_forward
 
-DIM ?= 32
+DIM ?= 64
 HIDDEN_DIM ?= 174
 N_LAYERS ?= 1
 N_HEADS ?= 8
 N_KV_HEADS ?= 4
-VOCAB_SIZE ?= 512
-SEQ_LEN ?= 512 	
+VOCAB_SIZE ?= 64
+SEQ_LEN ?= 128	
+STEPS ?= $(SEQ_LEN)	
 
 NUM_CORES?=1
 
 get_golden:
 	cd utils && gcc genRndWeights.c -o genRndWeights 
 	cd utils && gcc run.c -o run -lm
-	python3 utils/GM.py --dim $(DIM) --hidden_dim $(HIDDEN_DIM) --n_layers $(N_LAYERS) --n_heads $(N_HEADS) --n_kv_heads $(N_KV_HEADS) --vocab_size $(VOCAB_SIZE) --seq_len $(SEQ_LEN)
+	python3 utils/GM.py --dim $(DIM) --hidden_dim $(HIDDEN_DIM) --n_layers $(N_LAYERS) --n_heads $(N_HEADS) --n_kv_heads $(N_KV_HEADS) --vocab_size $(VOCAB_SIZE) --seq_len $(SEQ_LEN) --steps $(STEPS)
 
 
 TRAIN_LIB=/home/andrea/PULP-TrainLib-Tutorial/pulp-trainlib/lib
