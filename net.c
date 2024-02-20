@@ -1,6 +1,7 @@
 #include "pmsis.h"
 #include <math.h>
 #include <string.h>
+#include <ctype.h>
 #include "stdlib.h"
 #include "conf_and_weights.h"
 #include "token_and_logits.h"
@@ -322,6 +323,88 @@ float* forward(Transformer* transformer, int token, int pos) {
 }
 
 // ----------------------------------------------------------------------------
+// The Byte Pair Encoding (BPE) Tokenizer that translates strings <-> tokens
+
+typedef struct {
+    char *str;
+    int id;
+} TokenIndex;
+
+typedef struct {
+    char** vocab;
+    float* vocab_scores;
+    TokenIndex *sorted_vocab;
+    int vocab_size;
+    unsigned int max_token_length;
+    unsigned char byte_pieces[512]; // stores all single-byte strings
+} Tokenizer;
+
+void build_tokenizer(Tokenizer* t, int vocab_size) {
+    t->vocab_size = vocab_size;
+    t->vocab = VOCAB;
+    t->vocab_scores = VOCAB_SCORES;
+    t->sorted_vocab = NULL; // initialized lazily
+    for (int i = 0; i < 256; i++) {
+        t->byte_pieces[i * 2] = (unsigned char)i;
+        t->byte_pieces[i * 2 + 1] = '\0';
+    }
+
+    t->max_token_length = MAX_TOKEN_LENGTH;
+    int len;
+    int j=0;
+    for (int i = 0; i < vocab_size; i++) {
+        t->vocab[i] = &VOCAB_DATA[j];
+        while(VOCAB_DATA[j] != '\0' && i < vocab_size-1)
+            j++;
+        j++;
+    }
+}
+
+char* decode(Tokenizer* t, int prev_token, int token) {
+    char *piece = t->vocab[token];
+    // following BOS (1) token, sentencepiece decoder strips any leading whitespace (see PR #89)
+    if (prev_token == 1 && piece[0] == ' ') { piece++; }
+    // careful, some tokens designate raw bytes, and look like e.g. '<0x01>'
+    // parse this and convert and return the actual byte
+    unsigned char byte_val;
+    /*
+    if (sscanf(piece, "<0x%02hhX>", &byte_val) == 1) {
+        piece = (char*)t->byte_pieces + byte_val * 2;
+    }
+    */
+   // codice in sostituzione della sscanf, specifico per questo formato:
+    if(piece[0]=='<' && piece[1] == '0' && piece[2]=='x' && piece[5]=='>'){
+        int cifra1, cifra2;
+        if('0' <= piece[3] && piece[3]<= '9')
+            cifra1 = piece[3] - '0';
+        else
+            cifra1 = piece[3] - 'A' + 10; 
+        if('0' <= piece[4] && piece[4] <= '9')
+            cifra2 = piece[4] - '0';
+        else
+            cifra2 = piece[4] - 'A' + 10;
+        byte_val = cifra1*16 + cifra2;
+
+        piece = (char*)t->byte_pieces + byte_val * 2;
+    }
+    return piece;
+}
+
+void safe_printf(char *piece) {
+    // piece might be a raw byte token, and we only want to print printable chars or whitespace
+    // because some of the other bytes can be various control codes, backspace, etc.
+    if (piece == NULL) { return; }
+    if (piece[0] == '\0') { return; }
+    if (piece[1] == '\0') {
+        unsigned char byte_val = piece[0];
+        if (!(isprint(byte_val) || isspace(byte_val))) {
+            return; // bad byte, don't print it
+        }
+    }
+    printf("%s", piece);
+}
+
+// ----------------------------------------------------------------------------
 // The Sampler, which takes logits and returns a sampled token
 // sampling can be done in a few ways: greedy argmax, sampling, top-p sampling
 #ifndef _ProbIndex_
@@ -476,15 +559,25 @@ void net_step(){
     Transformer transformer;
     build_transformer(&transformer);
 
+    Tokenizer tokenizer;
+    build_tokenizer(&tokenizer, transformer.config.vocab_size);
+
     Sampler sampler;
     build_sampler(&sampler, transformer.config.vocab_size, temperature, topp, rng_seed);
 
     float* log;
     float diff_pos;
     float d, d_tot=0;
-    int pred_tok = TOKEN[0], tok_diversi=0;
-    for(int pos=0;pos<steps;pos++){
-        log = forward(&transformer, pred_tok, pos);
+    int token = 1, next, tok_diversi=0;
+    for(int pos = 0; pos < steps; pos++ ) {
+        log = forward(&transformer, token, pos);
+        next = sample(&sampler, log);
+        char* piece = decode(&tokenizer, token, next);
+        safe_printf(piece);
+        // fflush(stdout);
+        token = next;
+
+        #ifdef DEBUG_PRINT
         diff_pos = 0;
         for(int j=0;j<VOCAB_SIZE;j++){
             d = log[j] - LOGITS_RUN[pos][j];
@@ -496,15 +589,30 @@ void net_step(){
         diff_pos = diff_pos / VOCAB_SIZE;
         d_tot+=diff_pos;
         printf("Differenza media allo step %3d: %f\n", pos, diff_pos);       
-
+        
         if(pos<steps-1){
-            pred_tok = sample(&sampler, log);
-            if(pred_tok != TOKEN[pos+1])
+            if(token != TOKEN[pos+1])
                 tok_diversi++;
-            printf("Predict token: %4d Token vero: %4d\n", pred_tok, TOKEN[pos+1]);
+            printf("Predict token: %4d Token vero: %4d\n", token, TOKEN[pos+1]);
         }
+        #endif
     }
+    #ifdef DEBUG_PRINT
     printf("\nDifferenza media: %f\n", d_tot/steps);
     printf("Token diversi: %d/%d\n\n", tok_diversi, steps);
+    #endif
+    
+    printf("\n");
+    //check_decode(&tokenizer, transformer.config.vocab_size);
     return;
+}
+
+
+// funzione per verificare che la decodifica avviene correttamente
+void check_decode(Tokenizer* tokenizer, int vocab_size){
+    for(int tok=0;tok<vocab_size;tok++){
+        char* piece = decode(tokenizer, 2, tok);
+        safe_printf(piece);
+        printf("\n");
+    }
 }

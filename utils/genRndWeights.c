@@ -112,6 +112,7 @@ int main(int argc, char* argv[]){
     fprintf(fh, "PI_L2 float LOGITS [VOCAB_SIZE];\n");
     fprintf(fh, "PI_L2 char PROB_INDEX [VOCAB_SIZE*%ld];\n\n", sizeof(ProbIndex));
 
+    // Lettura valori dal file tokenizer
     Tokenizer t;
     FILE *file_tok = fopen(TOKENIZER_PATH, "rb");
     t.vocab = (char**) malloc(c.vocab_size*sizeof(char*));
@@ -125,24 +126,42 @@ int main(int argc, char* argv[]){
         exit(1);
     }
     fread(&t.max_token_length, sizeof(int), 1, file_tok);
-    int len;
+    int len, tot_size=0;
     for(int i=0; i<c.vocab_size; i++){
         fread(t.vocab_scores+i, sizeof(float), 1, file_tok);
         fread(&len, sizeof(int), 1, file_tok);
         t.vocab[i] = (char *)malloc(len+1);
-        fread(&t.vocab[i], len, 1, file_tok);
-        break;
+        tot_size += len+1;
+        fread(t.vocab[i], len, sizeof(char), file_tok); 
         t.vocab[i][len] = '\0';
-        printf("%s %d\n", t.vocab[i], len);
-
     }
     fclose(file_tok);
-
+    
+    // Scrittura sul file di header
     fprintf(fh, "// Allocazioni per il tokenizer\n");
-    fprintf(fh, "PI_L2 char* VOCAB [VOCAB_SIZE]\n");
-    fprintf(fh, "PI_L2 char float VOCAB_SCORES [VOCAB_SIZE]\n");
-
+    fprintf(fh, "#define MAX_TOKEN_LENGTH %d\n", t.max_token_length);
+    fprintf(fh, "PI_L2 float VOCAB_SCORES [VOCAB_SIZE] = {\n");
     int i;
+    for(i=0;i<c.vocab_size-1;i++){
+        fprintf(fh, "%f, ", t.vocab_scores[i]);
+        if(i%10==9)
+            fprintf(fh, "\n");
+    }
+    fprintf(fh, "%f};\n\n", t.vocab_scores[i]);
+
+    fprintf(fh, "PI_L2 char* VOCAB[VOCAB_SIZE];\n");
+    fprintf(fh, "PI_L2 unsigned char VOCAB_DATA [%d] = {\n", tot_size);
+    for(i=0;i<c.vocab_size;i++){
+        int j=0;
+        while(t.vocab[i][j]!='\0')
+            fprintf(fh, "0x%02x, ", (unsigned char) t.vocab[i][j++]);
+        if(i<c.vocab_size-1)
+            fprintf(fh, "0x%02x, \n", (unsigned char)'\0');
+        else
+            fprintf(fh, "0x%02x };\n\n", (unsigned char)'\0');
+    }
+
+    fprintf(fh, "// Allocazioni per i pesi del modello\n");
     fprintf(fh, "PI_L2 unsigned int weights_list[%d] = { ", w_dim);
     for(i=0;i<w_dim-1;i++){
         fprintf(fo, "%#x, ", *(unsigned int*)&w[i]);

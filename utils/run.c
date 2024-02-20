@@ -752,6 +752,8 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
     int voc_size = transformer->config.vocab_size;
     int* all_tokens = malloc(sizeof(int)*steps);
     float* all_logits = malloc(sizeof(float)* steps* voc_size);
+
+    // check_decode(tokenizer, transformer->config.vocab_size);
     
     while (pos < steps) {
 
@@ -778,7 +780,7 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
 
         // print the token as string, decode it with the Tokenizer object
         char* piece = decode(tokenizer, token, next);
-        // safe_printf(piece); // same as printf("%s", piece), but skips "unsafe" bytes
+        safe_printf(piece); // same as printf("%s", piece), but skips "unsafe" bytes
         fflush(stdout);
         token = next;
 
@@ -812,7 +814,6 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
         long end = time_in_ms();
         fprintf(stderr, "achieved tok/s: %f\n", (pos-1) / (double)(end-start)*1000);
     }
-
     free(prompt_tokens);
 }
 
@@ -1003,3 +1004,13 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 #endif
+
+
+// funzione per verificare che la decodifica avviene correttamente
+void check_decode(Tokenizer* tokenizer, int vocab_size){
+    for(int tok=0;tok<vocab_size;tok++){
+        char* piece = decode(tokenizer, 2, tok);
+        safe_printf(piece);
+        printf("\n");
+    }
+}
