@@ -4,3 +4,4 @@ BUILD/
 utils/genRndWeights
 utils/rnd_weights.bin
 utils/run
+.vscode/

@@ -569,6 +569,8 @@ void net_step(){
     float diff_pos;
     float d, d_tot=0;
     int token = 1, next, tok_diversi=0;
+
+    printf("\n\nOutput codice su pulp:\n\n");
     for(int pos = 0; pos < steps; pos++ ) {
         log = forward(&transformer, token, pos);
         next = sample(&sampler, log);
@@ -602,7 +604,7 @@ void net_step(){
     printf("Token diversi: %d/%d\n\n", tok_diversi, steps);
     #endif
     
-    printf("\n");
+    printf("\n\n-------------------------------------------------------\n\n");
     //check_decode(&tokenizer, transformer.config.vocab_size);
     return;
 }

@@ -754,7 +754,7 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
     float* all_logits = malloc(sizeof(float)* steps* voc_size);
 
     // check_decode(tokenizer, transformer->config.vocab_size);
-    
+    printf("\n\nOutput codice originale: \n\n");
     while (pos < steps) {
 
         // forward the transformer to get logits for the next token
@@ -787,7 +787,7 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
         // init the timer here because the first iteration can be slower
         if (start == 0) { start = time_in_ms(); }
     }
-    printf("\n");
+    printf("\n\n-------------------------------------------------------\n\n");
 
     // CODICE AGGIUNTO: 
     FILE* fh = fopen("token_and_logits.h", "w");
