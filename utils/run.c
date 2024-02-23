@@ -159,6 +159,11 @@ void read_checkpoint(char* checkpoint, Config* config, TransformerWeights* weigh
     if (*data == MAP_FAILED) { fprintf(stderr, "mmap failed!\n"); exit(EXIT_FAILURE); }
     float* weights_ptr = *data + sizeof(Config)/sizeof(float);
     memory_map_weights(weights, config, weights_ptr, shared_weights);
+
+    Config c = *config;
+    int head_size = c.dim / c.n_heads;
+    int w_dim = c.dim * (c.vocab_size + c.n_layers*(2 + 2*c.dim + head_size*c.n_kv_heads*2 + 3*c.hidden_dim) + 1);
+    printf("w_dim in run.c: %d\n", w_dim);
 }
 
 void build_transformer(Transformer *t, char* checkpoint_path) {
@@ -742,6 +747,10 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
         fprintf(stderr, "something is wrong, expected at least 1 prompt token\n");
         exit(EXIT_FAILURE);
     }
+    printf("ENCODED TOKENS: \n");
+    for(int i=0;i<num_prompt_tokens;i++){
+        printf("%d, ", prompt_tokens[i]);
+    }
 
     // start the main loop
     long start = 0;  // used to time our code, only initialized after first iteration
@@ -791,8 +800,10 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
 
     // CODICE AGGIUNTO: 
     FILE* fh = fopen("token_and_logits.h", "w");
+    int i;
+
     fprintf(fh, "PI_L2 int TOKEN[%d] = {", steps);
-    int i=0;
+    i=0;
     for(i=0;i<steps-1;i++){
         fprintf(fh, "%d, ", all_tokens[i]);
         if(i%10 == 9)
@@ -806,7 +817,7 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
         if(i%10 == 9)
             fprintf(fh, "\n");
     }
-    fprintf(fh,"%.10f};\n", all_logits[i]);
+    fprintf(fh, "%.10f};\n", all_logits[i]);
     fclose(fh);
 
     // report achieved tok/s (pos-1 because the timer starts after first iteration)

@@ -2,6 +2,7 @@ import argparse
 import subprocess
 
 parser = argparse.ArgumentParser("forward on Gap8")
+parser.add_argument("--weights_path", type=str, default="NULL")
 parser.add_argument("--dim", type=int, default=64)
 parser.add_argument("--hidden_dim", type=int, default=172)
 parser.add_argument("--n_layers", type=int, default=1)
@@ -12,8 +13,10 @@ parser.add_argument("--seq_len", type=int, default=512)
 parser.add_argument("--steps", type=int, default=256)
 parser.add_argument("--temperature", type=float, default=1.0)
 parser.add_argument("--rnd_seed", type=int, default=42)
+parser.add_argument("--prompt", type=str, default="")
 args = parser.parse_args()
 
+weights_path = args.weights_path
 dim = args.dim
 hidden_dim = args.hidden_dim
 n_layers = args.n_layers
@@ -24,6 +27,10 @@ seq_len = args.seq_len
 steps = args.steps
 temperature = args.temperature
 rnd_seed = args.rnd_seed
+prompt = args.prompt
 
-subprocess.run(["utils/genRndWeights", str(dim), str(hidden_dim), str(n_layers), str(n_heads), str(n_kv_heads), str(vocab_size), str(seq_len), str(steps), str(temperature), str(rnd_seed)])
-subprocess.run(["utils/run", "utils/rnd_weights.bin", "-z", "utils/tokenizer.bin", "-t", str(temperature), "-s", str(rnd_seed)])
+subprocess.run(["utils/genWeights", weights_path, str(dim), str(hidden_dim), str(n_layers), str(n_heads), str(n_kv_heads), str(vocab_size), str(seq_len), str(steps), str(temperature), str(rnd_seed), prompt])
+if(weights_path == "NULL"):
+    subprocess.run(["utils/run", "utils/rnd_weights.bin", "-z", "utils/tokenizer.bin", "-t", str(temperature), "-s", str(rnd_seed), "-n", str(steps), "-i", prompt])
+else:
+    subprocess.run(["utils/run", weights_path, "-z", "utils/tokenizer.bin", "-t", str(temperature), "-s", str(rnd_seed), "-n", str(steps), "-i", prompt])
