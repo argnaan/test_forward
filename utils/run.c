@@ -356,6 +356,10 @@ float* forward(Transformer* transformer, int token, int pos) {
         for (int i = 0; i < dim; i++) {
             x[i] += s->xb[i];
         }
+    /*
+        printf("\nx in forward dopo layer %lld: \n", l);
+        for(int i=0; i<10; i++)
+            printf("%.6f\t%c", x[i], i%10!=9? ' ':'\n');*/
     }
 
     // final rmsnorm
@@ -434,6 +438,7 @@ char* decode(Tokenizer* t, int prev_token, int token) {
     if (sscanf(piece, "<0x%02hhX>", &byte_val) == 1) {
         piece = (char*)t->byte_pieces + byte_val * 2;
     }
+    //printf("token: %d piece: %s\n", token, piece);
     return piece;
 }
 
@@ -606,6 +611,7 @@ int sample_argmax(float* probabilities, int n) {
             max_p = probabilities[i];
         }
     }
+    //printf("token: %3d prob: %f\n", max_i, probabilities[max_i]);
     return max_i;
 }
 
@@ -700,6 +706,7 @@ float random_f32(unsigned long long *state) { // random float32 in [0,1)
 int sample(Sampler* sampler, float* logits) {
     // sample the token given the logits and some hyperparameters
     int next;
+    // printf("sampler->temperature: %f\n", sampler->temperature);
     if (sampler->temperature == 0.0f) {
         // greedy argmax sampling: take the token with the highest probability
         next = sample_argmax(logits, sampler->vocab_size);
@@ -747,7 +754,7 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
         fprintf(stderr, "something is wrong, expected at least 1 prompt token\n");
         exit(EXIT_FAILURE);
     }
-    printf("ENCODED TOKENS: \n");
+    printf("ENCODED TOKENS: (%d)\n", num_prompt_tokens);
     for(int i=0;i<num_prompt_tokens;i++){
         printf("%d, ", prompt_tokens[i]);
     }
@@ -761,6 +768,10 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
     int voc_size = transformer->config.vocab_size;
     int* all_tokens = malloc(sizeof(int)*steps);
     float* all_logits = malloc(sizeof(float)* steps* voc_size);
+    if(all_tokens==NULL || all_logits==NULL){
+        printf("Malloc failed\n");
+        exit(1);
+    }
 
     // check_decode(tokenizer, transformer->config.vocab_size);
     printf("\n\nOutput codice originale: \n\n");
@@ -768,11 +779,6 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
 
         // forward the transformer to get logits for the next token
         float* logits = forward(transformer, token, pos);
-        
-        // codice aggiunto:
-        for(int i=0;i<voc_size;i++)
-            all_logits[pos*voc_size +i] = logits[i];
-        all_tokens[pos] = token;
         
         // advance the state machine
         if (pos < num_prompt_tokens - 1) {
@@ -782,8 +788,13 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
             // otherwise sample the next token from the logits
             next = sample(sampler, logits);
         }
-        pos++;
+        
+        // codice aggiunto:
+        for(int i=0;i<voc_size;i++)
+            all_logits[pos*voc_size +i] = logits[i];
+        all_tokens[pos] = token;
 
+        pos++;
         // data-dependent terminating condition: the BOS (=1) token delimits sequences
         // if (next == 1) { break; }
 
@@ -811,7 +822,7 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
     }
     fprintf(fh, "%d};\n", all_tokens[i]);
 
-    fprintf(fh, "PI_L2 float LOGITS_RUN[%d][%d] = {", steps, voc_size);
+    fprintf(fh, "PI_L2 float LOGITS_RUN[%d] = {", steps * voc_size);
     for(i=0;i<steps*voc_size-1;i++){
         fprintf(fh, "%.10f, ", all_logits[i]);
         if(i%10 == 9)
@@ -819,13 +830,16 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
     }
     fprintf(fh, "%.10f};\n", all_logits[i]);
     fclose(fh);
-
+    printf("Scritto il file token_and_logits.h\n");
     // report achieved tok/s (pos-1 because the timer starts after first iteration)
     if (pos > 1) {
         long end = time_in_ms();
         fprintf(stderr, "achieved tok/s: %f\n", (pos-1) / (double)(end-start)*1000);
     }
     free(prompt_tokens);
+
+    free(all_logits);
+    free(all_tokens);
 }
 
 void read_stdin(const char* guide, char* buffer, size_t bufsize) {
@@ -986,6 +1000,8 @@ int main(int argc, char *argv[]) {
     if (temperature < 0.0) temperature = 0.0;
     if (topp < 0.0 || 1.0 < topp) topp = 0.9;
     if (steps < 0) steps = 0;
+    printf("Temperature: %f\n", temperature);
+    printf("Random Seed: %lld\n", rng_seed);
     // build the Transformer via the model .bin file
     Transformer transformer;
     build_transformer(&transformer, checkpoint_path);

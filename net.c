@@ -3,12 +3,16 @@
 #include <string.h>
 #include <ctype.h>
 #include "stdlib.h"
+#include "stdio.h"
 #include "quicksort.h"
 #include "conf_and_weights.h"
+#include "stats.h"
 
 #ifdef DEBUG_PRINT
 #include "token_and_logits.h"
 #endif
+
+long unsigned cycle_pre=0, cycle_layer=0, cycle_post_rmsnorm=0, cycle_post_matmul=0, cycle_softmax=0, cycle_matmul=0;
 
 // ----------------------------------------------------------------------------
 // Transformer model
@@ -121,7 +125,7 @@ void read_checkpoint(Config* config, TransformerWeights* weights, int* fd, float
         shared_weights = 0;
         config->vocab_size = - config->vocab_size;
     }
-    float* weights_ptr = (float*) weights_list;
+    float* weights_ptr = weights_list;
     memory_map_weights(weights, config, weights_ptr, shared_weights);
 }
 
@@ -146,6 +150,8 @@ void build_transformer(Transformer *t) {
 }
 
 void matmul(float* xout, float* x, float* w, int n, int d) {
+    long unsigned tmp = pi_perf_read (PI_PERF_CYCLES);
+
     // W (d,n) @ x (n,) -> xout (d,)
     // by far the most amount of time is spent inside this little function
     int i;
@@ -157,6 +163,8 @@ void matmul(float* xout, float* x, float* w, int n, int d) {
         }
         xout[i] = val;
     }
+
+    cycle_matmul += pi_perf_read (PI_PERF_CYCLES) - tmp;
 }
 
 void rmsnorm(float* o, float* x, float* weight, int size) {
@@ -175,6 +183,7 @@ void rmsnorm(float* o, float* x, float* weight, int size) {
 }
 
 void softmax(float* x, int size) {
+    long unsigned tmp = pi_perf_read (PI_PERF_CYCLES);
     // find max value (for numerical stability)
     float max_val = x[0];
     for (int i = 1; i < size; i++) {
@@ -192,9 +201,16 @@ void softmax(float* x, int size) {
     for (int i = 0; i < size; i++) {
         x[i] /= sum;
     }
+
+    cycle_softmax += pi_perf_read (PI_PERF_CYCLES) - tmp;
 }
 
 float* forward(Transformer* transformer, int token, int pos) {
+    INIT_STATS();
+    PRE_START_STATS();
+    START_STATS();
+
+    long unsigned tmp = pi_perf_read (PI_PERF_CYCLES);
 
     // a few convenience variables
     Config* p = &transformer->config;
@@ -210,14 +226,20 @@ float* forward(Transformer* transformer, int token, int pos) {
     // copy the token embedding into x
     float* content_row = w->token_embedding_table + token * dim;
     memcpy(x, content_row, dim*sizeof(*x));
+
+    cycle_pre = pi_perf_read (PI_PERF_CYCLES) - tmp;
+    // printf("\ncycle_pre: %lu\n", cycle_pre);
+
     // forward all the layers
     for(unsigned long long l = 0; l < p->n_layers; l++) {
+        
+        tmp = pi_perf_read (PI_PERF_CYCLES);
 
         // attention rmsnorm
         rmsnorm(s->xb, x, w->rms_att_weight + l*dim, dim);
 
         // key and value point to the k cache
-        int loff = l * p->seq_len * kv_dim; // kv cache layer offset for convenience
+        int loff = l * STEPS * kv_dim; // kv cache layer offset for convenience
         s->k = s->key_cache + loff + pos * kv_dim;
         s->v = s->value_cache + loff + pos * kv_dim;
 
@@ -315,13 +337,25 @@ float* forward(Transformer* transformer, int token, int pos) {
         for (int i = 0; i < dim; i++) {
             x[i] += s->xb[i];
         }
+
+        cycle_layer = pi_perf_read (PI_PERF_CYCLES) - tmp;
+        // printf("pos: %d layer: %llu cycle: %lu\n", pos, l, cycle_layer);
     }
 
+    tmp = pi_perf_read (PI_PERF_CYCLES);
+        
     // final rmsnorm
     rmsnorm(x, x, w->rms_final_weight, dim);
+    
+    cycle_post_rmsnorm = pi_perf_read (PI_PERF_CYCLES) - tmp;
+    tmp = pi_perf_read (PI_PERF_CYCLES);
 
     // classifier into logits
     matmul(s->logits, x, w->wcls, p->dim, p->vocab_size);
+
+    cycle_post_matmul = pi_perf_read (PI_PERF_CYCLES) - tmp;
+    // printf("cycle_pos_rmsnorm: %lu\n", cycle_post_rmsnorm);
+    // printf("cycle_pos_matmul: %lu\n", cycle_post_matmul);
     return s->logits;
 }
 
@@ -393,6 +427,7 @@ char* decode(Tokenizer* t, int prev_token, int token) {
 
         piece = (char*)t->byte_pieces + byte_val * 2;
     }
+    //printf("token: %d piece: %s\n", token, piece);
     return piece;
 }
 
@@ -558,6 +593,7 @@ int sample_argmax(float* probabilities, int n) {
             max_p = probabilities[i];
         }
     }
+    //printf("token: %3d prob: %f\n", max_i, probabilities[max_i]);
     return max_i;
 }
 
@@ -646,6 +682,7 @@ float random_f32(unsigned long long *state) { // random float32 in [0,1)
 int sample(Sampler* sampler, float* logits) {
     // sample the token given the logits and some hyperparameters
     int next;
+    //printf("sampler->temperature: %f\n", sampler->temperature);
     if (sampler->temperature == 0.0f) {
         // greedy argmax sampling: take the token with the highest probability
         next = sample_argmax(logits, sampler->vocab_size);
@@ -669,11 +706,19 @@ int sample(Sampler* sampler, float* logits) {
 }
 
 void net_step(){
+/*  INIT_STATS();
+    PRE_START_STATS();
+    START_STATS();
+
+    unsigned long cycle_tot, cycle_encode, cycle_forward=0, cycle_sample=0, cycle_decode=0, cycle_tmp;
+    unsigned long instr_tot, instr_encode, instr_forward=0, instr_sample=0, instr_decode=0, instr_tmp;
+*/
+
     int steps = STEPS;
     float temperature = TEMPERATURE;
     float topp = 1.0f;
     unsigned long long rng_seed = RND_SEED;
-    printf("random_seed = %llu\n", rng_seed);
+
     Transformer transformer;
     build_transformer(&transformer);
 
@@ -689,28 +734,62 @@ void net_step(){
     int token, next, tok_diversi=0;
     int num_prompt_tokens=0;
     int* prompt_tokens = PROMPT_TOKENS;
+
+    //cycle_encode = pi_perf_read (PI_PERF_CYCLES);
+    //instr_encode = pi_perf_read (PI_PERF_INSTR);
     encode(&tokenizer, PROMPT, 1, 0, prompt_tokens, &num_prompt_tokens);
-    printf("ENCODED TOKENS: (%d)\n", num_prompt_tokens);
-    for(int i=0;i<num_prompt_tokens;i++)
-        printf("%d, ", prompt_tokens[i]);
+    //cycle_encode = pi_perf_read (PI_PERF_CYCLES) - cycle_encode;
+    //instr_encode =  pi_perf_read (PI_PERF_INSTR) - instr_encode;
 
     token = prompt_tokens[0];
-    printf("\n\nOutput codice su pulp:\n\n");
     for(int pos = 0; pos < steps; pos++ ) {
+        
+        //cycle_tmp = pi_perf_read(PI_PERF_CYCLES);
+        //instr_tmp = pi_perf_read (PI_PERF_INSTR);
+        
         log = forward(&transformer, token, pos);
+        
+        //cycle_forward += pi_perf_read(PI_PERF_CYCLES) - cycle_tmp;
+        //instr_forward += pi_perf_read(PI_PERF_INSTR) - instr_tmp;
+
         if(pos < num_prompt_tokens -1)
             next = prompt_tokens[pos+1];
-        else
+        else{
+
+            //cycle_tmp = pi_perf_read(PI_PERF_CYCLES);
+            //instr_tmp = pi_perf_read (PI_PERF_INSTR);
+
             next = sample(&sampler, log);
+            
+            //cycle_sample += pi_perf_read(PI_PERF_CYCLES) - cycle_tmp;
+            //instr_sample += pi_perf_read(PI_PERF_INSTR) - instr_tmp;
+
+            #ifdef DEBUG_PRINT
+            int next2 = sample(&sampler, &LOGITS_RUN[pos*512]);
+            printf("next: %3d next2: %3d \n", next, next2);
+            printf("log[next]:         %.10f log[next2]          %.10f\n", log[next], log[next2]);
+            printf("LOGITS_RUN [next]: %.10f LOGITS_RUN [next2]: %.10f\n\n", LOGITS_RUN[pos*512 + next], LOGITS_RUN[pos*512 + next2]);
+            #endif
+        }
+        
+        //cycle_tmp = pi_perf_read(PI_PERF_CYCLES);
+        //instr_tmp = pi_perf_read (PI_PERF_INSTR);
+
         char* piece = decode(&tokenizer, token, next);
+
+        //cycle_decode += pi_perf_read(PI_PERF_CYCLES) - cycle_tmp;
+        //instr_decode += pi_perf_read(PI_PERF_INSTR) - instr_tmp;
+
+        #ifndef DEBUG_PRINT
         safe_printf(piece);
-        // fflush(stdout);
+        #endif
+
         token = next;
 
         #ifdef DEBUG_PRINT
         diff_pos = 0;
         for(int j=0;j<VOCAB_SIZE;j++){
-            d = log[j] - LOGITS_RUN[pos][j];
+            d = log[j] - LOGITS_RUN[pos*VOCAB_SIZE+ j];
             if(d>0)
                 diff_pos+=d;
             else
@@ -718,22 +797,44 @@ void net_step(){
         }
         diff_pos = diff_pos / VOCAB_SIZE;
         d_tot+=diff_pos;
-        printf("Differenza media allo step %3d: %f\n", pos, diff_pos);       
+        //printf("Differenza media allo step %3d: %f\n", pos, diff_pos);       
         
         if(pos<steps-1){
             if(token != TOKEN[pos+1])
                 tok_diversi++;
-            printf("Predict token: %4d Token vero: %4d\n", token, TOKEN[pos+1]);
+            //printf("Predict token: %4d Token vero: %4d\n", token, TOKEN[pos+1]);
         }
         #endif
     }
+
     #ifdef DEBUG_PRINT
     printf("\nDifferenza media: %f\n", d_tot/steps);
     printf("Token diversi: %d/%d\n\n", tok_diversi, steps);
     #endif
-    
+/*
+    cycle_tot = pi_perf_read (PI_PERF_CYCLES);
+    instr_tot = pi_perf_read (PI_PERF_INSTR);
+     STOP_STATS();
+
+    printf("\n\n\nSTATS:\n\n");
+    printf("Cycle tot: %lu\n", cycle_tot);
+    printf("Cycle encode: %lu (%lu per token)\n", cycle_encode, cycle_encode/num_prompt_tokens);
+    printf("Cycle forward: %lu (%lu per step)\n", cycle_forward, cycle_forward/steps);
+    printf("Cycle sample: %lu (%lu per each sampled token)\n", cycle_sample, cycle_sample/(steps - num_prompt_tokens));
+    printf("Cycle decode: %lu (%lu per step)\n", cycle_decode, cycle_decode/steps);
+    printf("Instr tot: %lu\n", instr_tot);
+    printf("Instr encode: %lu (%lu per token)\n", instr_encode, instr_encode/num_prompt_tokens);
+    printf("Instr forward: %lu (%lu per step)\n", instr_forward, instr_forward/steps);
+    printf("Instr sample: %lu (%lu per each sampled token)\n", instr_sample, instr_sample/(steps - num_prompt_tokens));
+    printf("Instr decode: %lu (%lu per step)\n", instr_decode, instr_decode/steps);
+*/
+    #ifdef STATS
+    printf("\n\nTotal cycle matmul:  %lu\n", cycle_matmul);
+    printf("\n\nTotal cycle softmax: %lu\n", cycle_softmax);
+    #endif
+
     printf("\n\n-------------------------------------------------------\n\n");
-    //check_decode(&tokenizer, transformer.config.vocab_size);
+    //check_decode(&tokenizer, transformer.config.vocab_size);    
     return;
 }
 

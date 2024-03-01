@@ -5,17 +5,17 @@ WEIGHTS_PATH ?= utils/stories260K.bin
 # if weights are random generated manually set the config parameter
 DIM ?= 64
 HIDDEN_DIM ?= 172
-N_LAYERS ?= 5
+N_LAYERS ?= 1
 N_HEADS ?= 8
 N_KV_HEADS ?= 4
 VOCAB_SIZE ?= 512
 SEQ_LEN ?= 512
 
 # other option 
-STEPS ?= 64
-TEMPERATURE ?= 0
-RND_SEED ?= 42
-PROMPT ?= "Tim was so happy"
+STEPS ?= 256
+TEMPERATURE ?= 1.0
+RND_SEED ?= 2
+PROMPT ?= ""
 
 
 get_golden:
@@ -28,8 +28,7 @@ TRAIN_LIB=/home/andrea/PULP-TrainLib-Tutorial/pulp-trainlib/lib
 TRAIN_LIB_SRCS=$(TRAIN_LIB)/sources
 APP_SRCS = main.c net.c quicksort.c
 
-APP_LDFLAGS += -lm 
-APP_CFLAGS += -DNUM_CORES=${NUM_CORES}
+APP_LDFLAGS += -lm
 
 DATA_TYPE?='fp32'
 APP_CFLAGS += -I. -I$(TRAIN_LIB)/include
@@ -39,9 +38,10 @@ APP_CFLAGS += -DCLUSTER
 APP_CFLAGS += -DNUM_CORES=$(NUM_CORES)
 APP_CFLAGS += -DPROF_NET
 APP_CFLAGS += -DMEMOCC_COMP
-APP_CFLAGS += -mhwloopalign
 APP_LDFLAGS += -lm 
 
+#APP_CFLAGS += -DSTATS
+#APP_CFLAGS += -DDEBUG_PRINT
 
 include $(RULES_DIR)/pmsis_rules.mk
 

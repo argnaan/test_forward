@@ -1,7 +1,7 @@
 import argparse
 import subprocess
 
-parser = argparse.ArgumentParser("forward on Gap8")
+parser = argparse.ArgumentParser("Llama2 on Pulp")
 parser.add_argument("--weights_path", type=str, default="NULL")
 parser.add_argument("--dim", type=int, default=64)
 parser.add_argument("--hidden_dim", type=int, default=172)
