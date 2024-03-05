@@ -7,12 +7,13 @@
 #include "quicksort.h"
 #include "conf_and_weights.h"
 #include "stats.h"
+#include "pulp_train.h"
 
 #ifdef DEBUG_PRINT
 #include "token_and_logits.h"
 #endif
 
-long unsigned cycle_pre=0, cycle_layer=0, cycle_post_rmsnorm=0, cycle_post_matmul=0, cycle_softmax=0, cycle_matmul=0;
+long unsigned cycle_softmax=0, cycle_matmul=0, tmp;
 
 // ----------------------------------------------------------------------------
 // Transformer model
@@ -151,6 +152,20 @@ void build_transformer(Transformer *t) {
 
 void matmul(float* xout, float* x, float* w, int n, int d) {
     long unsigned tmp = pi_perf_read (PI_PERF_CYCLES);
+/*
+    struct matMul_args mm_args;
+    mm_args.A = w;
+    mm_args.B = x;
+    mm_args.C = xout; 
+    mm_args.N = d;
+    mm_args.K = n;
+    mm_args.M = 1;
+    mm_args.trans_B = 1;
+
+    pi_cl_team_fork(NUM_CORES, mm, &mm_args);
+    
+*/ 
+    // Original matmul: 
 
     // W (d,n) @ x (n,) -> xout (d,)
     // by far the most amount of time is spent inside this little function
@@ -163,7 +178,6 @@ void matmul(float* xout, float* x, float* w, int n, int d) {
         }
         xout[i] = val;
     }
-
     cycle_matmul += pi_perf_read (PI_PERF_CYCLES) - tmp;
 }
 
@@ -182,7 +196,7 @@ void rmsnorm(float* o, float* x, float* weight, int size) {
     }
 }
 
-void softmax(float* x, int size) {
+void softmax_here(float* x, int size) {
     long unsigned tmp = pi_perf_read (PI_PERF_CYCLES);
     // find max value (for numerical stability)
     float max_val = x[0];
@@ -206,11 +220,6 @@ void softmax(float* x, int size) {
 }
 
 float* forward(Transformer* transformer, int token, int pos) {
-    INIT_STATS();
-    PRE_START_STATS();
-    START_STATS();
-
-    long unsigned tmp = pi_perf_read (PI_PERF_CYCLES);
 
     // a few convenience variables
     Config* p = &transformer->config;
@@ -222,21 +231,23 @@ float* forward(Transformer* transformer, int token, int pos) {
     int kv_mul = p->n_heads / p->n_kv_heads; // integer multiplier of the kv sharing in multiquery
     int hidden_dim =  p->hidden_dim;
     int head_size = dim / p->n_heads;
-    
+  
     // copy the token embedding into x
     float* content_row = w->token_embedding_table + token * dim;
-    memcpy(x, content_row, dim*sizeof(*x));
 
-    cycle_pre = pi_perf_read (PI_PERF_CYCLES) - tmp;
-    // printf("\ncycle_pre: %lu\n", cycle_pre);
+    tmp = pi_perf_read (PI_PERF_CYCLES);
+    memcpy(x, content_row, dim*sizeof(*x));
+    if(pos == STEPS-1)
+        printf("\n\nforward_memcpy: %lu\n", pi_perf_read (PI_PERF_CYCLES) - tmp);
 
     // forward all the layers
     for(unsigned long long l = 0; l < p->n_layers; l++) {
         
-        tmp = pi_perf_read (PI_PERF_CYCLES);
-
         // attention rmsnorm
+        tmp = pi_perf_read (PI_PERF_CYCLES);
         rmsnorm(s->xb, x, w->rms_att_weight + l*dim, dim);
+        if(pos == STEPS-1)
+            printf("\nforward_l%llu_rmsorm: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
 
         // key and value point to the k cache
         int loff = l * STEPS * kv_dim; // kv cache layer offset for convenience
@@ -244,10 +255,22 @@ float* forward(Transformer* transformer, int token, int pos) {
         s->v = s->value_cache + loff + pos * kv_dim;
 
         // qkv matmuls for this position
+        tmp = pi_perf_read (PI_PERF_CYCLES);
         matmul(s->q, s->xb, w->wq + l*dim*dim, dim, dim);
-        matmul(s->k, s->xb, w->wk + l*dim*kv_dim, dim, kv_dim);
-        matmul(s->v, s->xb, w->wv + l*dim*kv_dim, dim, kv_dim);
+        if(pos == STEPS-1)
+            printf("forward_l%llu_matmul_q: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
         
+        tmp = pi_perf_read (PI_PERF_CYCLES);
+        matmul(s->k, s->xb, w->wk + l*dim*kv_dim, dim, kv_dim);
+        if(pos == STEPS-1)
+            printf("forward_l%llu_matmul_k: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
+
+        tmp = pi_perf_read (PI_PERF_CYCLES);
+        matmul(s->v, s->xb, w->wv + l*dim*kv_dim, dim, kv_dim);
+        if(pos == STEPS-1)
+            printf("forward_l%llu_matmul_v: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
+        
+        tmp = pi_perf_read (PI_PERF_CYCLES);
         // RoPE relative positional encoding: complex-valued rotate q and k in each head
         for (int i = 0; i < dim; i+=2) {
             int head_dim = i % head_size;
@@ -264,15 +287,22 @@ float* forward(Transformer* transformer, int token, int pos) {
                 vec[i+1] = v0 * fci + v1 * fcr;
             }
         }
+        if(pos == STEPS-1)
+            printf("forward_l%llu_RoPE: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
+        
         // multihead attention. iterate over all heads
+        unsigned long cycle_qk_prod = 0, cycle_softmax = 0, cycle_att_per_v;
         int h;
         #pragma omp parallel for private(h)
         for (h = 0; h < p->n_heads; h++) {
             // get the query vector for this head
             float* q = s->q + h * head_size;
             // attention scores for this head
-            float* att = s->att + h * p->seq_len;
+            float* att = s->att + h * STEPS;
             // iterate over all timesteps, including the current one
+
+            tmp =  pi_perf_read (PI_PERF_CYCLES);
+
             for (int t = 0; t <= pos; t++) {
                 // get the key vector for this head and at this timestep
                 float* k = s->key_cache + loff + t * kv_dim + (h / kv_mul) * head_size;
@@ -286,8 +316,14 @@ float* forward(Transformer* transformer, int token, int pos) {
                 att[t] = score;
             }
 
+            cycle_qk_prod += pi_perf_read (PI_PERF_CYCLES) - tmp;
+            tmp = pi_perf_read (PI_PERF_CYCLES);
+        
             // softmax the scores to get attention weights, from 0..pos inclusively
-            softmax(att, pos + 1);
+            softmax_here(att, pos + 1);
+
+            cycle_softmax += pi_perf_read (PI_PERF_CYCLES) - tmp;
+            tmp = pi_perf_read (PI_PERF_CYCLES);
 
             // weighted sum of the values, store back into xb
             float* xb = s->xb + h * head_size;
@@ -302,25 +338,52 @@ float* forward(Transformer* transformer, int token, int pos) {
                     xb[i] += a * v[i];
                 }
             }
+
+            cycle_att_per_v += pi_perf_read (PI_PERF_CYCLES) - tmp;
+        }
+        if(pos == STEPS-1){
+            printf("forward_l%llu_qk_prod: %lu\n", l, cycle_qk_prod);
+            printf("forward_l%llu_softmax: %lu\n", l, cycle_softmax);
+            printf("forward_l%llu_att_per_v: %lu\n", l, cycle_att_per_v);
         }
 
         // final matmul to get the output of the attention
+        tmp = pi_perf_read (PI_PERF_CYCLES);
         matmul(s->xb2, s->xb, w->wo + l*dim*dim, dim, dim);
 
+        if(pos == STEPS-1)
+            printf("forward_l%llu_att_mm: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
+
         // residual connection back into x
+        tmp = pi_perf_read (PI_PERF_CYCLES);
         for (int i = 0; i < dim; i++) {
             x[i] += s->xb2[i];
         }
 
+        if(pos == STEPS-1)
+            printf("forward_l%llu_residual_conn: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
+
         // ffn rmsnorm
+        tmp = pi_perf_read (PI_PERF_CYCLES);
         rmsnorm(s->xb, x, w->rms_ffn_weight + l*dim, dim);
+        
+        if(pos == STEPS-1)
+            printf("forward_l%llu_ffn_rmsnorm: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
 
         // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
         // first calculate self.w1(x) and self.w3(x)
+        tmp = pi_perf_read (PI_PERF_CYCLES);
         matmul(s->hb, s->xb, w->w1 + l*dim*hidden_dim, dim, hidden_dim);
+        if(pos == STEPS-1)
+            printf("forward_l%llu_ffn_mm1: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
+
+        tmp = pi_perf_read (PI_PERF_CYCLES);
         matmul(s->hb2, s->xb, w->w3 + l*dim*hidden_dim, dim, hidden_dim);
+        if(pos == STEPS-1)
+            printf("forward_l%llu_ffn_mm2: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
 
         // SwiGLU non-linearity
+        tmp = pi_perf_read (PI_PERF_CYCLES);
         for (int i = 0; i < hidden_dim; i++) {
             float val = s->hb[i];
             // silu(x)=x*σ(x), where σ(x) is the logistic sigmoid
@@ -329,33 +392,40 @@ float* forward(Transformer* transformer, int token, int pos) {
             val *= s->hb2[i];
             s->hb[i] = val;
         }
+        if(pos == STEPS-1)
+            printf("forward_l%llu_ffn_SwiGLU: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
 
         // final matmul to get the output of the ffn
+        tmp = pi_perf_read (PI_PERF_CYCLES);
         matmul(s->xb, s->hb, w->w2 + l*dim*hidden_dim, hidden_dim, dim);
 
+        if(pos == STEPS-1)
+            printf("forward_l%llu_ffn_mm3: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
+
         // residual connection
+        tmp = pi_perf_read (PI_PERF_CYCLES);
         for (int i = 0; i < dim; i++) {
             x[i] += s->xb[i];
         }
 
-        cycle_layer = pi_perf_read (PI_PERF_CYCLES) - tmp;
-        // printf("pos: %d layer: %llu cycle: %lu\n", pos, l, cycle_layer);
+        if(pos == STEPS-1)
+            printf("forward_l%llu_final_residual_conn: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
     }
-
-    tmp = pi_perf_read (PI_PERF_CYCLES);
-        
+    
     // final rmsnorm
+    tmp = pi_perf_read (PI_PERF_CYCLES);
     rmsnorm(x, x, w->rms_final_weight, dim);
     
-    cycle_post_rmsnorm = pi_perf_read (PI_PERF_CYCLES) - tmp;
-    tmp = pi_perf_read (PI_PERF_CYCLES);
+    if(pos == STEPS-1)
+        printf("\nforward_final_rmsnorm: %lu\n", pi_perf_read (PI_PERF_CYCLES) - tmp);
 
     // classifier into logits
+    tmp = pi_perf_read (PI_PERF_CYCLES);
     matmul(s->logits, x, w->wcls, p->dim, p->vocab_size);
+    
+    if(pos == STEPS-1)
+        printf("forward_final_matmul: %lu\n\n", pi_perf_read (PI_PERF_CYCLES) - tmp);
 
-    cycle_post_matmul = pi_perf_read (PI_PERF_CYCLES) - tmp;
-    // printf("cycle_pos_rmsnorm: %lu\n", cycle_post_rmsnorm);
-    // printf("cycle_pos_matmul: %lu\n", cycle_post_matmul);
     return s->logits;
 }
 
@@ -679,18 +749,31 @@ float random_f32(unsigned long long *state) { // random float32 in [0,1)
     return (random_u32(state) >> 8) / 16777216.0f;
 }
 
-int sample(Sampler* sampler, float* logits) {
+int sample(Sampler* sampler, float* logits, char isLastPos) {
     // sample the token given the logits and some hyperparameters
     int next;
     //printf("sampler->temperature: %f\n", sampler->temperature);
     if (sampler->temperature == 0.0f) {
         // greedy argmax sampling: take the token with the highest probability
+        tmp = pi_perf_read (PI_PERF_CYCLES);
+        
         next = sample_argmax(logits, sampler->vocab_size);
+
+        if(isLastPos)
+            printf("sample_argmax: %lu\n", pi_perf_read(PI_PERF_CYCLES)-tmp);
+
     } else {
         // apply the temperature to the logits
-        for (int q=0; q<sampler->vocab_size; q++) { logits[q] /= sampler->temperature; }
+        for (int q=0; q<sampler->vocab_size; q++)
+            logits[q] /= sampler->temperature; 
+
+        tmp = pi_perf_read(PI_PERF_CYCLES);
         // apply softmax to the logits to get the probabilities for next token
-        softmax(logits, sampler->vocab_size);
+        softmax_here(logits, sampler->vocab_size);
+
+        if(isLastPos)
+            printf("sample_softmax: %lu\n", pi_perf_read(PI_PERF_CYCLES)-tmp);
+
         // flip a (float) coin (this is our source of entropy for sampling)
         float coin = random_f32(&sampler->rng_state);
         // we sample from this distribution to get the next token
@@ -699,24 +782,25 @@ int sample(Sampler* sampler, float* logits) {
             next = sample_mult(logits, sampler->vocab_size, coin);
         } else {
             // top-p (nucleus) sampling, clamping the least likely tokens to zero
+            tmp = pi_perf_read(PI_PERF_CYCLES);
             next = sample_topp(logits, sampler->vocab_size, sampler->topp, sampler->probindex, coin);
+            if(isLastPos)
+                printf("sample_sample_topp: %lu\n", pi_perf_read(PI_PERF_CYCLES)-tmp);
         }
     }
     return next;
 }
 
 void net_step(){
-/*  INIT_STATS();
+    #ifdef STATS
+    INIT_STATS();
     PRE_START_STATS();
     START_STATS();
-
-    unsigned long cycle_tot, cycle_encode, cycle_forward=0, cycle_sample=0, cycle_decode=0, cycle_tmp;
-    unsigned long instr_tot, instr_encode, instr_forward=0, instr_sample=0, instr_decode=0, instr_tmp;
-*/
+    #endif
 
     int steps = STEPS;
     float temperature = TEMPERATURE;
-    float topp = 1.0f;
+    float topp = 0.9f;
     unsigned long long rng_seed = RND_SEED;
 
     Transformer transformer;
@@ -735,58 +819,48 @@ void net_step(){
     int num_prompt_tokens=0;
     int* prompt_tokens = PROMPT_TOKENS;
 
-    //cycle_encode = pi_perf_read (PI_PERF_CYCLES);
-    //instr_encode = pi_perf_read (PI_PERF_INSTR);
+    tmp = pi_perf_read (PI_PERF_CYCLES);
+
     encode(&tokenizer, PROMPT, 1, 0, prompt_tokens, &num_prompt_tokens);
-    //cycle_encode = pi_perf_read (PI_PERF_CYCLES) - cycle_encode;
-    //instr_encode =  pi_perf_read (PI_PERF_INSTR) - instr_encode;
+    
+    printf("encode: %lu\n", pi_perf_read (PI_PERF_CYCLES) - tmp);
 
     token = prompt_tokens[0];
     for(int pos = 0; pos < steps; pos++ ) {
         
-        //cycle_tmp = pi_perf_read(PI_PERF_CYCLES);
-        //instr_tmp = pi_perf_read (PI_PERF_INSTR);
-        
         log = forward(&transformer, token, pos);
-        
-        //cycle_forward += pi_perf_read(PI_PERF_CYCLES) - cycle_tmp;
-        //instr_forward += pi_perf_read(PI_PERF_INSTR) - instr_tmp;
 
         if(pos < num_prompt_tokens -1)
             next = prompt_tokens[pos+1];
         else{
-
-            //cycle_tmp = pi_perf_read(PI_PERF_CYCLES);
-            //instr_tmp = pi_perf_read (PI_PERF_INSTR);
-
-            next = sample(&sampler, log);
-            
-            //cycle_sample += pi_perf_read(PI_PERF_CYCLES) - cycle_tmp;
-            //instr_sample += pi_perf_read(PI_PERF_INSTR) - instr_tmp;
+            next = sample(&sampler, log, pos==steps-1);
 
             #ifdef DEBUG_PRINT
-            int next2 = sample(&sampler, &LOGITS_RUN[pos*512]);
+            int next2 = sample(&sampler, &LOGITS_RUN[pos*VOCAB_SIZE]);
             printf("next: %3d next2: %3d \n", next, next2);
             printf("log[next]:         %.10f log[next2]          %.10f\n", log[next], log[next2]);
             printf("LOGITS_RUN [next]: %.10f LOGITS_RUN [next2]: %.10f\n\n", LOGITS_RUN[pos*512 + next], LOGITS_RUN[pos*512 + next2]);
             #endif
         }
         
-        //cycle_tmp = pi_perf_read(PI_PERF_CYCLES);
-        //instr_tmp = pi_perf_read (PI_PERF_INSTR);
+        /*
+        if(next==1)
+            break;
+        */
+        tmp = pi_perf_read (PI_PERF_CYCLES);
 
         char* piece = decode(&tokenizer, token, next);
-
-        //cycle_decode += pi_perf_read(PI_PERF_CYCLES) - cycle_tmp;
-        //instr_decode += pi_perf_read(PI_PERF_INSTR) - instr_tmp;
-
-        #ifndef DEBUG_PRINT
-        safe_printf(piece);
-        #endif
-
         token = next;
 
-        #ifdef DEBUG_PRINT
+        if(pos==steps-1)
+            printf("decode: %lu\n\n\n", pi_perf_read( PI_PERF_CYCLES)-tmp);
+
+        #ifndef DEBUG_PRINT
+        
+        safe_printf(piece);
+        
+        #else
+        
         diff_pos = 0;
         for(int j=0;j<VOCAB_SIZE;j++){
             d = log[j] - LOGITS_RUN[pos*VOCAB_SIZE+ j];
@@ -797,12 +871,12 @@ void net_step(){
         }
         diff_pos = diff_pos / VOCAB_SIZE;
         d_tot+=diff_pos;
-        //printf("Differenza media allo step %3d: %f\n", pos, diff_pos);       
+        printf("Differenza media allo step %3d: %f\n", pos, diff_pos);       
         
         if(pos<steps-1){
             if(token != TOKEN[pos+1])
                 tok_diversi++;
-            //printf("Predict token: %4d Token vero: %4d\n", token, TOKEN[pos+1]);
+            printf("Predict token: %4d Token vero: %4d\n", token, TOKEN[pos+1]);
         }
         #endif
     }
@@ -829,8 +903,9 @@ void net_step(){
     printf("Instr decode: %lu (%lu per step)\n", instr_decode, instr_decode/steps);
 */
     #ifdef STATS
-    printf("\n\nTotal cycle matmul:  %lu\n", cycle_matmul);
-    printf("\n\nTotal cycle softmax: %lu\n", cycle_softmax);
+    STOP_STATS();
+    printf("\nTotal cycle matmul = %lu\n", cycle_matmul);
+    printf("Total cycle softmax = %lu\n", cycle_softmax);
     #endif
 
     printf("\n\n-------------------------------------------------------\n\n");

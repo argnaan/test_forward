@@ -216,7 +216,6 @@ int main(int argc, char* argv[]){
             fprintf(fh, "0x%02x };\n\n", (unsigned char)'\0');
     }
 
-    printf("t.vocab.size: %d\n", t.vocab_size);
     t.sorted_vocab = malloc(t.vocab_size * sizeof(TokenIndex));
     for (int i = 0; i < t.vocab_size; i++) {
         t.sorted_vocab[i].str = t.vocab[i];

@@ -796,7 +796,7 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
 
         pos++;
         // data-dependent terminating condition: the BOS (=1) token delimits sequences
-        // if (next == 1) { break; }
+        if (next == 1) { break; }
 
         // print the token as string, decode it with the Tokenizer object
         char* piece = decode(tokenizer, token, next);
@@ -968,8 +968,8 @@ int main(int argc, char *argv[]) {
     // default parameters
     char *checkpoint_path = NULL;  // e.g. out/model.bin
     char *tokenizer_path = "tokenizer.bin";
-    float temperature = .0f;   // 0.0 = greedy deterministic. 1.0 = original. don't set higher
-    float topp = 1.0f;          // top-p in nucleus sampling. 1.0 = off. 0.9 works well, but slower
+    float temperature = 1.0f;   // 0.0 = greedy deterministic. 1.0 = original. don't set higher
+    float topp = 0.9f;          // top-p in nucleus sampling. 1.0 = off. 0.9 works well, but slower
     int steps = 256;            // number of steps to run for
     char *prompt = NULL;        // prompt string
     unsigned long long rng_seed = 0; // seed rng with time by default
