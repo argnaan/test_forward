@@ -17,7 +17,7 @@ TEMPERATURE ?= 1.0
 RND_SEED ?= 100
 PROMPT ?= "Tim was very happy"
 
-NUM_CORES ?= 1
+NUM_CORES ?= 8
 
 
 get_golden:
@@ -31,6 +31,8 @@ TRAIN_LIB_SRCS=$(TRAIN_LIB)/sources
 
 APP_SRCS = main.c net.c quicksort.c
 APP_SRCS += $(TRAIN_LIB_SRCS)/pulp_matmul_fp32.c
+APP_SRCS += $(TRAIN_LIB_SRCS)/pulp_train_utils_fp32.c
+APP_SRCS += $(TRAIN_LIB_SRCS)/pulp_rmsnorm_fp32.c
 
 APP_LDFLAGS += -lm
 
@@ -38,9 +40,9 @@ NUM_CORES ?= 1
 DATA_TYPE?='fp32'
 APP_CFLAGS += -I. -I$(TRAIN_LIB)/include
 APP_CFLAGS += -DCLUSTER -DFABRIC -O3 -g3
-APP_CFLAGS += -DNUM_CORES=$(NUM_CORES)
-APP_LDFLAGS += -lm 
 
+APP_CFLAGS += -DNUM_CORES=$(NUM_CORES)
+APP_CFLAGS += -DFASTEXPF # usa la fast expf al posto della expf standard 	
 APP_CFLAGS += -DSTATS
 #APP_CFLAGS += -DDEBUG_PRINT
 

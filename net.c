@@ -8,6 +8,7 @@
 #include "conf_and_weights.h"
 #include "stats.h"
 #include "pulp_train.h"
+#include "pulp_rmsnorm_fp32.h"
 
 #ifdef DEBUG_PRINT
 #include "token_and_logits.h"
@@ -152,7 +153,7 @@ void build_transformer(Transformer *t) {
 
 void matmul(float* xout, float* x, float* w, int n, int d) {
     long unsigned tmp = pi_perf_read (PI_PERF_CYCLES);
-/*
+
     struct matMul_args mm_args;
     mm_args.A = w;
     mm_args.B = x;
@@ -160,11 +161,18 @@ void matmul(float* xout, float* x, float* w, int n, int d) {
     mm_args.N = d;
     mm_args.K = n;
     mm_args.M = 1;
-    mm_args.trans_B = 1;
+    mm_args.trans_B = 0;
 
-    pi_cl_team_fork(NUM_CORES, mm, &mm_args);
+    struct mm_manager_args man_args1;
+    man_args1.mm_args = &mm_args;
+    man_args1.layer_type = LAYER_LINEAR;
+    man_args1.step_type = STEP_FW;
+    man_args1.matmul_type = 7; //MATMUL_TYPE 11: 4x2, 7: 4x1, 8: 8x1
+    pi_cl_team_fork(NUM_CORES, mm_manager, &man_args1);
+
+    //pi_cl_team_fork(NUM_CORES, mm, &mm_args);
     
-*/ 
+/* 
     // Original matmul: 
 
     // W (d,n) @ x (n,) -> xout (d,)
@@ -177,7 +185,7 @@ void matmul(float* xout, float* x, float* w, int n, int d) {
             val += w[i * n + j] * x[j];
         }
         xout[i] = val;
-    }
+    }*/
     cycle_matmul += pi_perf_read (PI_PERF_CYCLES) - tmp;
 }
 
@@ -189,11 +197,24 @@ void rmsnorm(float* o, float* x, float* weight, int size) {
     }
     ss /= size;
     ss += 1e-5f;
-    ss = 1.0f / sqrtf(ss);
+    // ss = 1.0f / sqrtf(ss);
+    ss = q_rsqrt(ss);
     // normalize and scale
+
+    
     for (int j = 0; j < size; j++) {
         o[j] = weight[j] * (ss * x[j]);
     }
+    /* 
+    struct rmsNorm_args rms_args;
+    rms_args.out = o;
+    rms_args.in = x;
+    rms_args.w = weight;
+    rms_args.scaling_factor = ss;
+    rms_args.size = size;
+
+    pi_cl_team_fork(NUM_CORES, rmsnorm_parallelized, &rms_args);
+    */
 }
 
 void softmax_here(float* x, int size) {
@@ -208,7 +229,13 @@ void softmax_here(float* x, int size) {
     // exp and sum
     float sum = 0.0f;
     for (int i = 0; i < size; i++) {
+
+        #ifdef FASTEXPF
+        x[i] = fastexp_gist(x[i] - max_val);
+        #else
         x[i] = expf(x[i] - max_val);
+        #endif
+
         sum += x[i];
     }
     // normalize
@@ -308,10 +335,15 @@ float* forward(Transformer* transformer, int token, int pos) {
                 float* k = s->key_cache + loff + t * kv_dim + (h / kv_mul) * head_size;
                 // calculate the attention score as the dot product of q and k
                 float score = 0.0f;
+                
                 for (int i = 0; i < head_size; i++) {
                     score += q[i] * k[i];
                 }
+                
+                // matmul(&score, q, k, head_size, 1);
+
                 score /= sqrtf(head_size);
+                // score *= q_rsqrt(head_size);
                 // save the score to the attention buffer
                 att[t] = score;
             }
@@ -387,7 +419,12 @@ float* forward(Transformer* transformer, int token, int pos) {
         for (int i = 0; i < hidden_dim; i++) {
             float val = s->hb[i];
             // silu(x)=x*σ(x), where σ(x) is the logistic sigmoid
+
+            #ifdef FASTEXPF
+            val *= (1.0f / (1.0f + fastexp_gist(-val)));
+            #else
             val *= (1.0f / (1.0f + expf(-val)));
+            #endif
             // elementwise multiply with w3(x)
             val *= s->hb2[i];
             s->hb[i] = val;
