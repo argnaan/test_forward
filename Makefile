@@ -17,8 +17,6 @@ TEMPERATURE ?= 1.0
 RND_SEED ?= 100
 PROMPT ?= "Tim was very happy"
 
-NUM_CORES ?= 8
-
 
 get_golden:
 	cd utils && gcc genWeights.c -o genWeights -O3
@@ -33,16 +31,23 @@ APP_SRCS = main.c net.c quicksort.c
 APP_SRCS += $(TRAIN_LIB_SRCS)/pulp_matmul_fp32.c
 APP_SRCS += $(TRAIN_LIB_SRCS)/pulp_train_utils_fp32.c
 APP_SRCS += $(TRAIN_LIB_SRCS)/pulp_rmsnorm_fp32.c
+APP_SRCS += $(TRAIN_LIB_SRCS)/pulp_act_fp32.c
 
 APP_LDFLAGS += -lm
 
-NUM_CORES ?= 1
 DATA_TYPE?='fp32'
 APP_CFLAGS += -I. -I$(TRAIN_LIB)/include
 APP_CFLAGS += -DCLUSTER -DFABRIC -O3 -g3
 
+# OTTIMIZZAZIONI: 
+
+NUM_CORES ?= 8
 APP_CFLAGS += -DNUM_CORES=$(NUM_CORES)
-APP_CFLAGS += -DFASTEXPF # usa la fast expf al posto della expf standard 	
+#APP_CFLAGS += -DFASTEXPF # usa la fast expf al posto della expf standard
+APP_CFLAGS += -DQ_RSQRT
+APP_CFLAGS += -DRMSNORM_PARALLELIZED
+APP_CFLAGS += -DSOFTMAX_PARALLELIZED
+
 APP_CFLAGS += -DSTATS
 #APP_CFLAGS += -DDEBUG_PRINT
 

@@ -7,14 +7,16 @@
 #include "quicksort.h"
 #include "conf_and_weights.h"
 #include "stats.h"
-#include "pulp_train.h"
+#include "pulp_train.h" // include tutti gli altri header di trainlib
 #include "pulp_rmsnorm_fp32.h"
 
 #ifdef DEBUG_PRINT
 #include "token_and_logits.h"
 #endif
 
-long unsigned cycle_softmax=0, cycle_matmul=0, tmp;
+long unsigned cycle_matmul=0, tmp;
+
+PI_L2 float buffer_n_cores[NUM_CORES];
 
 // ----------------------------------------------------------------------------
 // Transformer model
@@ -197,28 +199,20 @@ void rmsnorm(float* o, float* x, float* weight, int size) {
     }
     ss /= size;
     ss += 1e-5f;
-    // ss = 1.0f / sqrtf(ss);
-    ss = q_rsqrt(ss);
-    // normalize and scale
 
-    
+    #ifdef Q_RSQRT
+    ss = q_rsqrt(ss);
+    #else
+    ss = 1.0f / sqrtf(ss);
+    #endif
+
+    // normalize and scale
     for (int j = 0; j < size; j++) {
         o[j] = weight[j] * (ss * x[j]);
     }
-    /* 
-    struct rmsNorm_args rms_args;
-    rms_args.out = o;
-    rms_args.in = x;
-    rms_args.w = weight;
-    rms_args.scaling_factor = ss;
-    rms_args.size = size;
-
-    pi_cl_team_fork(NUM_CORES, rmsnorm_parallelized, &rms_args);
-    */
 }
 
-void softmax_here(float* x, int size) {
-    long unsigned tmp = pi_perf_read (PI_PERF_CYCLES);
+void softmax_original(float* x, int size) {
     // find max value (for numerical stability)
     float max_val = x[0];
     for (int i = 1; i < size; i++) {
@@ -242,8 +236,6 @@ void softmax_here(float* x, int size) {
     for (int i = 0; i < size; i++) {
         x[i] /= sum;
     }
-
-    cycle_softmax += pi_perf_read (PI_PERF_CYCLES) - tmp;
 }
 
 float* forward(Transformer* transformer, int token, int pos) {
@@ -267,12 +259,19 @@ float* forward(Transformer* transformer, int token, int pos) {
     if(pos == STEPS-1)
         printf("\n\nforward_memcpy: %lu\n", pi_perf_read (PI_PERF_CYCLES) - tmp);
 
+
     // forward all the layers
     for(unsigned long long l = 0; l < p->n_layers; l++) {
         
         // attention rmsnorm
         tmp = pi_perf_read (PI_PERF_CYCLES);
+
+        #ifdef RMSNORM_PARALLELIZED
+        rmsnorm_parallelized(s->xb, x, w->rms_att_weight + l*dim, dim);
+        #else
         rmsnorm(s->xb, x, w->rms_att_weight + l*dim, dim);
+        #endif
+
         if(pos == STEPS-1)
             printf("\nforward_l%llu_rmsorm: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
 
@@ -318,7 +317,7 @@ float* forward(Transformer* transformer, int token, int pos) {
             printf("forward_l%llu_RoPE: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
         
         // multihead attention. iterate over all heads
-        unsigned long cycle_qk_prod = 0, cycle_softmax = 0, cycle_att_per_v;
+        unsigned long cycle_qk_prod = 0, cycle_softmax = 0, cycle_att_per_v=0;
         int h;
         #pragma omp parallel for private(h)
         for (h = 0; h < p->n_heads; h++) {
@@ -340,10 +339,11 @@ float* forward(Transformer* transformer, int token, int pos) {
                     score += q[i] * k[i];
                 }
                 
-                // matmul(&score, q, k, head_size, 1);
+                // matmul(&score, q, k, head_size, 1);      // non è ottimizata
 
                 score /= sqrtf(head_size);
-                // score *= q_rsqrt(head_size);
+                // score *= q_rsqrt(head_size);             // non migliora le prestazioni
+
                 // save the score to the attention buffer
                 att[t] = score;
             }
@@ -352,7 +352,12 @@ float* forward(Transformer* transformer, int token, int pos) {
             tmp = pi_perf_read (PI_PERF_CYCLES);
         
             // softmax the scores to get attention weights, from 0..pos inclusively
-            softmax_here(att, pos + 1);
+            
+            #if defined(SOFTMAX_PARALLELIZED) && !defined(HEAD_PARALLELIZED)
+            pulp_vector_softmax(att, att, buffer_n_cores, pos+1);
+            #else
+            softmax_original(att, pos + 1);
+            #endif
 
             cycle_softmax += pi_perf_read (PI_PERF_CYCLES) - tmp;
             tmp = pi_perf_read (PI_PERF_CYCLES);
@@ -373,6 +378,7 @@ float* forward(Transformer* transformer, int token, int pos) {
 
             cycle_att_per_v += pi_perf_read (PI_PERF_CYCLES) - tmp;
         }
+
         if(pos == STEPS-1){
             printf("forward_l%llu_qk_prod: %lu\n", l, cycle_qk_prod);
             printf("forward_l%llu_softmax: %lu\n", l, cycle_softmax);
@@ -397,8 +403,13 @@ float* forward(Transformer* transformer, int token, int pos) {
 
         // ffn rmsnorm
         tmp = pi_perf_read (PI_PERF_CYCLES);
-        rmsnorm(s->xb, x, w->rms_ffn_weight + l*dim, dim);
         
+        #ifdef RMSNORM_PARALLELIZED
+        rmsnorm_parallelized(s->xb, x, w->rms_ffn_weight + l*dim, dim);
+        #else
+        rmsnorm(s->xb, x, w->rms_ffn_weight + l*dim, dim);
+        #endif
+
         if(pos == STEPS-1)
             printf("forward_l%llu_ffn_rmsnorm: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
 
@@ -448,17 +459,21 @@ float* forward(Transformer* transformer, int token, int pos) {
         if(pos == STEPS-1)
             printf("forward_l%llu_final_residual_conn: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
     }
-    
+
     // final rmsnorm
     tmp = pi_perf_read (PI_PERF_CYCLES);
-    rmsnorm(x, x, w->rms_final_weight, dim);
+    #ifdef RMSNORM_PARALLELIZED
+    rmsnorm_parallelized(s->xb, x, w->rms_final_weight, dim);
+    #else
+    rmsnorm(s->xb, x, w->rms_final_weight, dim);
+    #endif
     
     if(pos == STEPS-1)
         printf("\nforward_final_rmsnorm: %lu\n", pi_perf_read (PI_PERF_CYCLES) - tmp);
 
     // classifier into logits
     tmp = pi_perf_read (PI_PERF_CYCLES);
-    matmul(s->logits, x, w->wcls, p->dim, p->vocab_size);
+    matmul(s->logits, s->xb, w->wcls, p->dim, p->vocab_size);
     
     if(pos == STEPS-1)
         printf("forward_final_matmul: %lu\n\n", pi_perf_read (PI_PERF_CYCLES) - tmp);
@@ -805,8 +820,13 @@ int sample(Sampler* sampler, float* logits, char isLastPos) {
             logits[q] /= sampler->temperature; 
 
         tmp = pi_perf_read(PI_PERF_CYCLES);
+        
         // apply softmax to the logits to get the probabilities for next token
-        softmax_here(logits, sampler->vocab_size);
+        #ifdef SOFTMAX_PARALLELIZED
+        pulp_vector_softmax(logits, logits, buffer_n_cores, sampler->vocab_size);
+        #else
+        softmax_original(logits, sampler->vocab_size);
+        #endif
 
         if(isLastPos)
             printf("sample_softmax: %lu\n", pi_perf_read(PI_PERF_CYCLES)-tmp);
@@ -942,7 +962,6 @@ void net_step(){
     #ifdef STATS
     STOP_STATS();
     printf("\nTotal cycle matmul = %lu\n", cycle_matmul);
-    printf("Total cycle softmax = %lu\n", cycle_softmax);
     #endif
 
     printf("\n\n-------------------------------------------------------\n\n");
