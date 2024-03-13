@@ -267,7 +267,7 @@ float* forward(Transformer* transformer, int token, int pos) {
         tmp = pi_perf_read (PI_PERF_CYCLES);
 
         #ifdef RMSNORM_PARALLELIZED
-        rmsnorm_parallelized(s->xb, x, w->rms_att_weight + l*dim, dim);
+        rmsnorm_parallelized_fp32(s->xb, x, w->rms_att_weight + l*dim, dim);
         #else
         rmsnorm(s->xb, x, w->rms_att_weight + l*dim, dim);
         #endif
@@ -354,7 +354,7 @@ float* forward(Transformer* transformer, int token, int pos) {
             // softmax the scores to get attention weights, from 0..pos inclusively
             
             #if defined(SOFTMAX_PARALLELIZED) && !defined(HEAD_PARALLELIZED)
-            pulp_vector_softmax(att, att, buffer_n_cores, pos+1);
+            pulp_vector_softmax_fp32(att, att, buffer_n_cores, pos+1);
             #else
             softmax_original(att, pos + 1);
             #endif
@@ -394,9 +394,19 @@ float* forward(Transformer* transformer, int token, int pos) {
 
         // residual connection back into x
         tmp = pi_perf_read (PI_PERF_CYCLES);
+
+        #ifdef RESIDUAL_PARALLELIZED
+        struct vect_sum_args vsa;
+        vsa.op_1 = s->xb2;
+        vsa.op_2 = x;
+        vsa.dest = x;
+        vsa.size = dim;
+        pi_cl_team_fork(NUM_CORES, vect_sum, &vsa);
+        #else
         for (int i = 0; i < dim; i++) {
             x[i] += s->xb2[i];
         }
+        #endif
 
         if(pos == STEPS-1)
             printf("forward_l%llu_residual_conn: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
@@ -405,7 +415,7 @@ float* forward(Transformer* transformer, int token, int pos) {
         tmp = pi_perf_read (PI_PERF_CYCLES);
         
         #ifdef RMSNORM_PARALLELIZED
-        rmsnorm_parallelized(s->xb, x, w->rms_ffn_weight + l*dim, dim);
+        rmsnorm_parallelized_fp32(s->xb, x, w->rms_ffn_weight + l*dim, dim);
         #else
         rmsnorm(s->xb, x, w->rms_ffn_weight + l*dim, dim);
         #endif
@@ -452,9 +462,19 @@ float* forward(Transformer* transformer, int token, int pos) {
 
         // residual connection
         tmp = pi_perf_read (PI_PERF_CYCLES);
+        
+        #ifdef RESIDUAL_PARALLELIZED
+        vsa.op_1 = s->xb;
+        vsa.op_2 = x;
+        vsa.dest = x;
+        vsa.size = dim;
+        pi_cl_team_fork(NUM_CORES, vect_sum, &vsa);
+    
+        #else
         for (int i = 0; i < dim; i++) {
             x[i] += s->xb[i];
         }
+        #endif
 
         if(pos == STEPS-1)
             printf("forward_l%llu_final_residual_conn: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
@@ -463,7 +483,7 @@ float* forward(Transformer* transformer, int token, int pos) {
     // final rmsnorm
     tmp = pi_perf_read (PI_PERF_CYCLES);
     #ifdef RMSNORM_PARALLELIZED
-    rmsnorm_parallelized(s->xb, x, w->rms_final_weight, dim);
+    rmsnorm_parallelized_fp32(s->xb, x, w->rms_final_weight, dim);
     #else
     rmsnorm(s->xb, x, w->rms_final_weight, dim);
     #endif
@@ -823,7 +843,7 @@ int sample(Sampler* sampler, float* logits, char isLastPos) {
         
         // apply softmax to the logits to get the probabilities for next token
         #ifdef SOFTMAX_PARALLELIZED
-        pulp_vector_softmax(logits, logits, buffer_n_cores, sampler->vocab_size);
+        pulp_vector_softmax_fp32(logits, logits, buffer_n_cores, sampler->vocab_size);
         #else
         softmax_original(logits, sampler->vocab_size);
         #endif
