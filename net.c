@@ -4,7 +4,7 @@
 #include <ctype.h>
 #include "stdlib.h"
 #include "stdio.h"
-#include "quicksort.h"
+#include "llama2_utils.h"
 #include "conf_and_weights.h"
 #include "stats.h"
 #include "pulp_train.h" // include tutti gli altri header di trainlib
@@ -14,7 +14,7 @@
 #include "token_and_logits.h"
 #endif
 
-long unsigned cycle_matmul=0, tmp;
+long unsigned cycle_matmul=0, tmp, tmp2;
 
 PI_L2 float buffer_n_cores[NUM_CORES];
 
@@ -256,7 +256,7 @@ float* forward(Transformer* transformer, int token, int pos) {
 
     tmp = pi_perf_read (PI_PERF_CYCLES);
     memcpy(x, content_row, dim*sizeof(*x));
-    if(pos == STEPS-1)
+    if(pos==STEPS-1 && STATS)
         printf("\n\nforward_memcpy: %lu\n", pi_perf_read (PI_PERF_CYCLES) - tmp);
 
 
@@ -272,7 +272,7 @@ float* forward(Transformer* transformer, int token, int pos) {
         rmsnorm(s->xb, x, w->rms_att_weight + l*dim, dim);
         #endif
 
-        if(pos == STEPS-1)
+        if(pos==STEPS-1 && STATS)
             printf("\nforward_l%llu_rmsorm: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
 
         // key and value point to the k cache
@@ -283,17 +283,17 @@ float* forward(Transformer* transformer, int token, int pos) {
         // qkv matmuls for this position
         tmp = pi_perf_read (PI_PERF_CYCLES);
         matmul(s->q, s->xb, w->wq + l*dim*dim, dim, dim);
-        if(pos == STEPS-1)
+        if(pos==STEPS-1 && STATS)
             printf("forward_l%llu_matmul_q: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
         
         tmp = pi_perf_read (PI_PERF_CYCLES);
         matmul(s->k, s->xb, w->wk + l*dim*kv_dim, dim, kv_dim);
-        if(pos == STEPS-1)
+        if(pos==STEPS-1 && STATS)
             printf("forward_l%llu_matmul_k: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
 
         tmp = pi_perf_read (PI_PERF_CYCLES);
         matmul(s->v, s->xb, w->wv + l*dim*kv_dim, dim, kv_dim);
-        if(pos == STEPS-1)
+        if(pos==STEPS-1 && STATS)
             printf("forward_l%llu_matmul_v: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
         
         tmp = pi_perf_read (PI_PERF_CYCLES);
@@ -313,13 +313,36 @@ float* forward(Transformer* transformer, int token, int pos) {
                 vec[i+1] = v0 * fci + v1 * fcr;
             }
         }
-        if(pos == STEPS-1)
+        if(pos==STEPS-1 && STATS)
             printf("forward_l%llu_RoPE: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
         
         // multihead attention. iterate over all heads
         unsigned long cycle_qk_prod = 0, cycle_softmax = 0, cycle_att_per_v=0;
         int h;
-        #pragma omp parallel for private(h)
+        
+        tmp2 = pi_perf_read (PI_PERF_CYCLES);
+
+        #ifdef HEAD_PARALLELIZED
+
+        struct llama2_mhsa_args mhsa_args;
+
+        mhsa_args.q = s->q;
+        mhsa_args.att = s->att;
+        mhsa_args.key_cache = s->key_cache;
+        mhsa_args.value_cache = s->value_cache;
+        mhsa_args.xb = s->xb;
+        mhsa_args.pos = pos;
+        mhsa_args.loff = loff;
+        mhsa_args.kv_dim = kv_dim;
+        mhsa_args.kv_mul = kv_mul;
+        mhsa_args.head_size = head_size;
+        mhsa_args.n_heads = p->n_heads;
+        mhsa_args.steps = STEPS;
+
+        pi_cl_team_fork(NUM_CORES, llama2_mhsa_fp32_cl, &mhsa_args);
+
+        #else
+
         for (h = 0; h < p->n_heads; h++) {
             // get the query vector for this head
             float* q = s->q + h * head_size;
@@ -339,8 +362,6 @@ float* forward(Transformer* transformer, int token, int pos) {
                     score += q[i] * k[i];
                 }
                 
-                // matmul(&score, q, k, head_size, 1);      // non è ottimizata
-
                 score /= sqrtf(head_size);
                 // score *= q_rsqrt(head_size);             // non migliora le prestazioni
 
@@ -353,7 +374,7 @@ float* forward(Transformer* transformer, int token, int pos) {
         
             // softmax the scores to get attention weights, from 0..pos inclusively
             
-            #if defined(SOFTMAX_PARALLELIZED) && !defined(HEAD_PARALLELIZED)
+            #ifdef SOFTMAX_PARALLELIZED
             pulp_vector_softmax_fp32(att, att, buffer_n_cores, pos+1);
             #else
             softmax_original(att, pos + 1);
@@ -379,36 +400,43 @@ float* forward(Transformer* transformer, int token, int pos) {
             cycle_att_per_v += pi_perf_read (PI_PERF_CYCLES) - tmp;
         }
 
-        if(pos == STEPS-1){
+        if(pos==STEPS-1 && STATS){
             printf("forward_l%llu_qk_prod: %lu\n", l, cycle_qk_prod);
             printf("forward_l%llu_softmax: %lu\n", l, cycle_softmax);
             printf("forward_l%llu_att_per_v: %lu\n", l, cycle_att_per_v);
         }
 
+        #endif
+
+        if(pos==STEPS-1 && STATS)
+            printf("forward_l%llu_mhsa: %lu\n", l, pi_perf_read(PI_PERF_CYCLES) - tmp2);
+
         // final matmul to get the output of the attention
         tmp = pi_perf_read (PI_PERF_CYCLES);
         matmul(s->xb2, s->xb, w->wo + l*dim*dim, dim, dim);
 
-        if(pos == STEPS-1)
+        if(pos==STEPS-1 && STATS)
             printf("forward_l%llu_att_mm: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
 
         // residual connection back into x
         tmp = pi_perf_read (PI_PERF_CYCLES);
 
         #ifdef RESIDUAL_PARALLELIZED
+
         struct vect_sum_args vsa;
         vsa.op_1 = s->xb2;
         vsa.op_2 = x;
         vsa.dest = x;
         vsa.size = dim;
         pi_cl_team_fork(NUM_CORES, vect_sum, &vsa);
+        
         #else
         for (int i = 0; i < dim; i++) {
             x[i] += s->xb2[i];
         }
         #endif
 
-        if(pos == STEPS-1)
+        if(pos==STEPS-1 && STATS)
             printf("forward_l%llu_residual_conn: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
 
         // ffn rmsnorm
@@ -420,23 +448,35 @@ float* forward(Transformer* transformer, int token, int pos) {
         rmsnorm(s->xb, x, w->rms_ffn_weight + l*dim, dim);
         #endif
 
-        if(pos == STEPS-1)
+        if(pos==STEPS-1 && STATS)
             printf("forward_l%llu_ffn_rmsnorm: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
 
         // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
         // first calculate self.w1(x) and self.w3(x)
         tmp = pi_perf_read (PI_PERF_CYCLES);
         matmul(s->hb, s->xb, w->w1 + l*dim*hidden_dim, dim, hidden_dim);
-        if(pos == STEPS-1)
+        if(pos==STEPS-1 && STATS)
             printf("forward_l%llu_ffn_mm1: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
 
         tmp = pi_perf_read (PI_PERF_CYCLES);
         matmul(s->hb2, s->xb, w->w3 + l*dim*hidden_dim, dim, hidden_dim);
-        if(pos == STEPS-1)
+        if(pos==STEPS-1 && STATS)
             printf("forward_l%llu_ffn_mm2: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
 
         // SwiGLU non-linearity
         tmp = pi_perf_read (PI_PERF_CYCLES);
+
+        #ifdef SWIGLU_PARALLELIZED
+
+        struct swiglu_args sa;
+        sa.in1 = s->hb;
+        sa.in2 = s->hb2;
+        sa.out = s->hb;
+        sa.dim = hidden_dim;
+        pi_cl_team_fork(NUM_CORES, pulp_swiglu_fp32_cl, &sa);
+
+        #else
+
         for (int i = 0; i < hidden_dim; i++) {
             float val = s->hb[i];
             // silu(x)=x*σ(x), where σ(x) is the logistic sigmoid
@@ -450,14 +490,17 @@ float* forward(Transformer* transformer, int token, int pos) {
             val *= s->hb2[i];
             s->hb[i] = val;
         }
-        if(pos == STEPS-1)
+
+        #endif
+
+        if(pos==STEPS-1 && STATS)
             printf("forward_l%llu_ffn_SwiGLU: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
 
         // final matmul to get the output of the ffn
         tmp = pi_perf_read (PI_PERF_CYCLES);
         matmul(s->xb, s->hb, w->w2 + l*dim*hidden_dim, hidden_dim, dim);
 
-        if(pos == STEPS-1)
+        if(pos==STEPS-1 && STATS)
             printf("forward_l%llu_ffn_mm3: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
 
         // residual connection
@@ -476,7 +519,7 @@ float* forward(Transformer* transformer, int token, int pos) {
         }
         #endif
 
-        if(pos == STEPS-1)
+        if(pos==STEPS-1 && STATS)
             printf("forward_l%llu_final_residual_conn: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
     }
 
@@ -488,14 +531,14 @@ float* forward(Transformer* transformer, int token, int pos) {
     rmsnorm(s->xb, x, w->rms_final_weight, dim);
     #endif
     
-    if(pos == STEPS-1)
+    if(pos==STEPS-1 && STATS)
         printf("\nforward_final_rmsnorm: %lu\n", pi_perf_read (PI_PERF_CYCLES) - tmp);
 
     // classifier into logits
     tmp = pi_perf_read (PI_PERF_CYCLES);
     matmul(s->logits, s->xb, w->wcls, p->dim, p->vocab_size);
     
-    if(pos == STEPS-1)
+    if(pos==STEPS-1 && STATS)
         printf("forward_final_matmul: %lu\n\n", pi_perf_read (PI_PERF_CYCLES) - tmp);
 
     return s->logits;
@@ -900,7 +943,8 @@ void net_step(){
 
     encode(&tokenizer, PROMPT, 1, 0, prompt_tokens, &num_prompt_tokens);
     
-    printf("encode: %lu\n", pi_perf_read (PI_PERF_CYCLES) - tmp);
+    if(STATS)
+        printf("encode: %lu\n", pi_perf_read (PI_PERF_CYCLES) - tmp);
 
     token = prompt_tokens[0];
     for(int pos = 0; pos < steps; pos++ ) {
@@ -910,10 +954,10 @@ void net_step(){
         if(pos < num_prompt_tokens -1)
             next = prompt_tokens[pos+1];
         else{
-            next = sample(&sampler, log, pos==steps-1);
+            next = sample(&sampler, log, pos==STEPS-1 && STATS);
 
             #ifdef DEBUG_PRINT
-            int next2 = sample(&sampler, &LOGITS_RUN[pos*VOCAB_SIZE]);
+            int next2 = sample(&sampler, &LOGITS_RUN[pos*VOCAB_SIZE], 0);
             printf("next: %3d next2: %3d \n", next, next2);
             printf("log[next]:         %.10f log[next2]          %.10f\n", log[next], log[next2]);
             printf("LOGITS_RUN [next]: %.10f LOGITS_RUN [next2]: %.10f\n\n", LOGITS_RUN[pos*512 + next], LOGITS_RUN[pos*512 + next2]);
@@ -929,7 +973,7 @@ void net_step(){
         char* piece = decode(&tokenizer, token, next);
         token = next;
 
-        if(pos==steps-1)
+        if(pos==STEPS-1 && STATS)
             printf("decode: %lu\n\n\n", pi_perf_read( PI_PERF_CYCLES)-tmp);
 
         #ifndef DEBUG_PRINT
@@ -962,27 +1006,12 @@ void net_step(){
     printf("\nDifferenza media: %f\n", d_tot/steps);
     printf("Token diversi: %d/%d\n\n", tok_diversi, steps);
     #endif
-/*
-    cycle_tot = pi_perf_read (PI_PERF_CYCLES);
-    instr_tot = pi_perf_read (PI_PERF_INSTR);
-     STOP_STATS();
 
-    printf("\n\n\nSTATS:\n\n");
-    printf("Cycle tot: %lu\n", cycle_tot);
-    printf("Cycle encode: %lu (%lu per token)\n", cycle_encode, cycle_encode/num_prompt_tokens);
-    printf("Cycle forward: %lu (%lu per step)\n", cycle_forward, cycle_forward/steps);
-    printf("Cycle sample: %lu (%lu per each sampled token)\n", cycle_sample, cycle_sample/(steps - num_prompt_tokens));
-    printf("Cycle decode: %lu (%lu per step)\n", cycle_decode, cycle_decode/steps);
-    printf("Instr tot: %lu\n", instr_tot);
-    printf("Instr encode: %lu (%lu per token)\n", instr_encode, instr_encode/num_prompt_tokens);
-    printf("Instr forward: %lu (%lu per step)\n", instr_forward, instr_forward/steps);
-    printf("Instr sample: %lu (%lu per each sampled token)\n", instr_sample, instr_sample/(steps - num_prompt_tokens));
-    printf("Instr decode: %lu (%lu per step)\n", instr_decode, instr_decode/steps);
-*/
-    #ifdef STATS
-    STOP_STATS();
-    printf("\nTotal cycle matmul = %lu\n", cycle_matmul);
-    #endif
+
+    if(STATS){
+        STOP_STATS();
+        printf("\nTotal cycle matmul = %lu\n", cycle_matmul);
+    }
 
     printf("\n\n-------------------------------------------------------\n\n");
     //check_decode(&tokenizer, transformer.config.vocab_size);    

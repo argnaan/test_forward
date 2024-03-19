@@ -27,7 +27,7 @@ get_golden:
 TRAIN_LIB= /home/andrea/PULP-TrainLib-Tutorial/pulp-trainlib/lib
 TRAIN_LIB_SRCS=$(TRAIN_LIB)/sources
 
-APP_SRCS = main.c net.c quicksort.c
+APP_SRCS = main.c net.c llama2_utils.c
 APP_SRCS += $(TRAIN_LIB_SRCS)/pulp_matmul_fp32.c
 APP_SRCS += $(TRAIN_LIB_SRCS)/pulp_train_utils_fp32.c
 APP_SRCS += $(TRAIN_LIB_SRCS)/pulp_rmsnorm_fp32.c
@@ -47,9 +47,12 @@ APP_CFLAGS += -DNUM_CORES=$(NUM_CORES)
 #APP_CFLAGS += -DQ_RSQRT
 APP_CFLAGS += -DRMSNORM_PARALLELIZED
 APP_CFLAGS += -DSOFTMAX_PARALLELIZED
-#APP_CFLAGS += -DRESIDUAL_PARALLELIZED
+APP_CFLAGS += -DRESIDUAL_PARALLELIZED
+APP_CFLAGS += -DSWIGLU_PARALLELIZED
+APP_CFLAGS += -DHEAD_PARALLELIZED
 
-APP_CFLAGS += -DSTATS
+
+APP_CFLAGS += -DSTATS=0
 #APP_CFLAGS += -DDEBUG_PRINT
 
 include $(RULES_DIR)/pmsis_rules.mk
