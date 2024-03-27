@@ -52,7 +52,6 @@ void llama2_mhsa_fp32_cl(void *llama2_mhsa_args){
     struct llama2_mhsa_args* args = (struct llama2_mhsa_args*) llama2_mhsa_args;
 
     int pos = args->pos;
-    int loff = args->loff;
     int kv_dim = args->kv_dim;
     int kv_mul = args->kv_mul;
     int head_size = args->head_size;
@@ -74,7 +73,7 @@ void llama2_mhsa_fp32_cl(void *llama2_mhsa_args){
 
             for (int t = 0; t <= pos; t++) {
                 // get the key vector for this head and at this timestep
-                float* k = args->key_cache + loff + t * kv_dim + (h / kv_mul) * head_size;
+                float* k = args->key_cache + t * kv_dim + (h / kv_mul) * head_size;
                 // calculate the attention score as the dot product of q and k
                 float score = 0.0f;
                 
@@ -97,7 +96,7 @@ void llama2_mhsa_fp32_cl(void *llama2_mhsa_args){
             memset(xb, 0, head_size * sizeof(float));
             for (int t = 0; t <= pos; t++) {
                 // get the value vector for this head and at this timestep
-                float* v = args->value_cache + loff + t * kv_dim + (h / kv_mul) * head_size;
+                float* v = args->value_cache + t * kv_dim + (h / kv_mul) * head_size;
                 // get the attention weight for this timestep
                 float a = att[t];
                 // accumulate the weighted value into xb

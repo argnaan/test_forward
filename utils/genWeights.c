@@ -141,7 +141,8 @@ int main(int argc, char* argv[]){
     fprintf(fh, "PI_L2 char* PROMPT = \"%s\";\n", prompt);
     fprintf(fh, "PI_L2 int PROMPT_TOKENS[%ld];\n", strlen(prompt)+3);
 
-    fprintf(fh,"// Allocazioni per il RunState\n");
+    fprintf(fh,"\n// Allocazioni per il RunState\n");
+ 
     fprintf(fh, "PI_L2 float X [DIM];\n");
     fprintf(fh, "PI_L2 float XB [DIM];\n");
     fprintf(fh, "PI_L2 float XB2 [DIM];\n");
@@ -151,8 +152,28 @@ int main(int argc, char* argv[]){
     fprintf(fh, "PI_L2 float KEY_CACHE [N_LAYERS*STEPS*KV_DIM];\n");
     fprintf(fh, "PI_L2 float VALUE_CACHE [N_LAYERS*STEPS*KV_DIM];\n");
     fprintf(fh, "PI_L2 float ATT[N_HEADS*STEPS];\n");
-    fprintf(fh, "PI_L2 float LOGITS [VOCAB_SIZE];\n");
-    fprintf(fh, "PI_L2 char PROB_INDEX [VOCAB_SIZE*%ld];\n\n", sizeof(ProbIndex));
+    fprintf(fh, "PI_L2 float LOGITS [VOCAB_SIZE];\n\n");
+
+    int size_1, size_2, size_4;
+    if(c.hidden_dim > c.dim){
+        size_1 = c.hidden_dim;
+        size_2 = c.hidden_dim > steps ? c.hidden_dim : steps;
+    }
+    else{
+        size_1 = c.dim;
+        size_2 = c.dim > steps ? c.dim : steps;
+    }
+    size_4 = c.dim;
+/*
+    fprintf(fh, "PI_L1 float BUFF1[%d];\n", size_1);
+    fprintf(fh, "PI_L1 float BUFF2[%d];\n", size_2);
+    fprintf(fh, "PI_L1 float BUFF3[%d];\n", size_2);
+    fprintf(fh, "PI_L1 float BUFF4[%d];\n", size_4);
+    fprintf(fh, "PI_L1 float BUFF_W_1[%d];\n", c.dim*c.hidden_dim);
+    fprintf(fh, "PI_L1 float BUFF_W_2[%d];\n\n", c.dim*c.hidden_dim);
+ */   
+
+    fprintf(fh, "\nPI_L2 char PROB_INDEX [VOCAB_SIZE*%ld];\n\n", sizeof(ProbIndex));
 
     // Lettura valori dal file tokenizer
     Tokenizer t;

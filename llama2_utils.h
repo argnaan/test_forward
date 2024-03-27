@@ -23,7 +23,6 @@ struct llama2_mhsa_args{
     float* value_cache;
     float* xb;
     int pos;
-    int loff;
     int kv_dim;
     int kv_mul;
     int head_size;
