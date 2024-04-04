@@ -35,7 +35,7 @@ APP_SRCS += $(TRAIN_LIB_SRCS)/pulp_act_fp32.c
 
 APP_LDFLAGS += -lm
 
-DATA_TYPE?='fp32'
+DATA_TYPE ?= 'fp32'
 APP_CFLAGS += -I. -I$(TRAIN_LIB)/include
 APP_CFLAGS += -DCLUSTER -DFABRIC -O3 -g3
 
@@ -46,7 +46,7 @@ APP_CFLAGS += -DNUM_CORES=$(NUM_CORES)
 #APP_CFLAGS += -DFASTEXPF # usa la fast expf al posto della expf standard
 #APP_CFLAGS += -DQ_RSQRT
 
-APP_CFLAGS += -DSTATS
+APP_CFLAGS += -DSTATS=1
 
 include $(RULES_DIR)/pmsis_rules.mk
 

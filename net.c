@@ -10,11 +10,13 @@
 #include "pulp_train.h" // include tutti gli altri header di trainlib
 #include "pulp_rmsnorm_fp32.h"
 
-PI_L2 float buffer_n_cores[NUM_CORES];
+long unsigned tmp;
+
+PI_L1 float buffer_n_cores[NUM_CORES];
 
 PI_L1 float BUFF1[64]; 
 PI_L1 float BUFF2[64];  
-PI_L1 float BUFF3[64]; 
+PI_L1 float BUFF3[172]; 
 PI_L1 float BUFF4[4096]; 
 
 PI_L1 float BUFF_W_1[11008]; 
@@ -136,16 +138,18 @@ void read_checkpoint(Config* config, TransformerWeights* weights, int* fd, float
 }
 
 void malloc_run_state(RunState* s, Config* p) {
+    /*
     s->x = X;
     s->xb = XB;
     s->xb2 = XB2;
     s->hb = HB;
     s->hb2 = HB2;
     s->q = Q;
-    s->key_cache = KEY_CACHE;
-    s->value_cache = VALUE_CACHE;
     s->att = ATT;
     s->logits = LOGITS;
+    */
+    s->key_cache = KEY_CACHE;
+    s->value_cache = VALUE_CACHE;
 }
 
 void build_transformer(Transformer *t) {
@@ -228,12 +232,12 @@ float* forward(Transformer* transformer, int token, int pos) {
     pi_cl_dma_memcpy(&token_emb_table_to_x);
 
     // trasferimento dei pesi della rmsnorm
-    pi_cl_dma_copy_t rms_att_weight;
-    rms_att_weight.ext = (uint32_t) w->rms_att_weight;
-    rms_att_weight.loc = (uint32_t) BUFF_W_1;
-    rms_att_weight.size = dim* sizeof(*w->rms_att_weight);
-    rms_att_weight.dir = PI_CL_DMA_DIR_EXT2LOC;
-    pi_cl_dma_memcpy(&rms_att_weight);       
+    pi_cl_dma_copy_t rms_weight;
+    rms_weight.ext = (uint32_t) w->rms_att_weight;
+    rms_weight.loc = (uint32_t) BUFF4;
+    rms_weight.size = dim* sizeof(*w->rms_att_weight);
+    rms_weight.dir = PI_CL_DMA_DIR_EXT2LOC;
+    pi_cl_dma_memcpy(&rms_weight);       
  
 
     // forward all the layers
@@ -252,13 +256,17 @@ float* forward(Transformer* transformer, int token, int pos) {
         kv_weight.size = dim*kv_dim*sizeof(*w->wv);
         kv_weight.dir = PI_CL_DMA_DIR_EXT2LOC;
         pi_cl_dma_memcpy(&kv_weight);
-        
-        pi_cl_dma_wait(&token_emb_table_to_x);
-        pi_cl_dma_wait(&rms_att_weight);
 
-        rmsnorm_parallelized_fp32(s->xb, x, BUFF_W_1, dim);
+        pi_cl_dma_wait(&token_emb_table_to_x);
+        pi_cl_dma_wait(&rms_weight);
+
+        tmp = pi_perf_read (PI_PERF_CYCLES);
+
+        rmsnorm_parallelized_fp32(s->xb, x, BUFF4, dim);
         // rmsnorm_parallelized_fp32(s->xb, x, w->rms_att_weight + l*dim, dim);
-        
+        if(pos==STEPS-1 && STATS)
+            printf("\nforward_l%llu_rmsorm: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
+
         // qkv matmuls for this position
 
         // trasferimento dei pesi della matmul di q
@@ -270,8 +278,13 @@ float* forward(Transformer* transformer, int token, int pos) {
         pi_cl_dma_memcpy(&q_weight);
         
         pi_cl_dma_wait(&kv_weight);
+
+        tmp = pi_perf_read (PI_PERF_CYCLES);
+
         matmul(BUFF4, s->xb, BUFF_W_2, dim, kv_dim);
         // matmul(s->v, s->xb, BUFF_W_2, dim, kv_dim);
+        if(pos==STEPS-1 && STATS)
+            printf("forward_l%llu_matmul_v: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
         
         kv_weight.ext = (uint32_t) (w->wk + l*dim*kv_dim);
         pi_cl_dma_memcpy(&kv_weight);
@@ -286,8 +299,12 @@ float* forward(Transformer* transformer, int token, int pos) {
         
 
         pi_cl_dma_wait(&q_weight);
+
+        tmp = pi_perf_read (PI_PERF_CYCLES);
         matmul(s->q, s->xb, BUFF_W_1, dim, dim);
         // matmul(s->q, s->xb, w->wq + l*dim*dim, dim, dim);
+        if(pos==STEPS-1 && STATS)
+            printf("forward_l%llu_matmul_q: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
 
         // spostamento della key cache in BUFF_W_1 (tranne per la possima posizione)
         pi_cl_dma_copy_t k_cache_to_L1;
@@ -299,8 +316,13 @@ float* forward(Transformer* transformer, int token, int pos) {
 
         s->k = BUFF_W_1 + kv_dim*pos;
         pi_cl_dma_wait(&kv_weight);
+
+        tmp = pi_perf_read (PI_PERF_CYCLES);
+
         matmul(s->k, s->xb, BUFF_W_2, dim, kv_dim);
         // matmul(s->k, s->xb, w->wk + l*dim*kv_dim, dim, kv_dim);
+        if(pos==STEPS-1 && STATS)
+            printf("forward_l%llu_matmul_k: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
 
         // spostamento della value cache in BUFF_W_2
         pi_cl_dma_wait(&kv_to_L2);
@@ -311,6 +333,8 @@ float* forward(Transformer* transformer, int token, int pos) {
         v_cache_to_L1.dir = PI_CL_DMA_DIR_EXT2LOC;
         pi_cl_dma_memcpy(&v_cache_to_L1);
         
+        tmp = pi_perf_read (PI_PERF_CYCLES);
+
         // RoPE relative positional encoding: complex-valued rotate q and k in each head
         for (int i = 0; i < dim; i+=2) {
             int head_dim = i % head_size;
@@ -327,6 +351,8 @@ float* forward(Transformer* transformer, int token, int pos) {
                 vec[i+1] = v0 * fci + v1 * fcr;
             }
         }
+        if(pos==STEPS-1 && STATS)
+            printf("forward_l%llu_RoPE: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
 
         // trasferimento del vettore k nella key cache
         kv_to_L2.loc = (uint32_t) s->k;
@@ -338,14 +364,14 @@ float* forward(Transformer* transformer, int token, int pos) {
 
         struct llama2_mhsa_args mhsa_args;
 
-        mhsa_args.q = s->q; // BUFF3
+        mhsa_args.q = s->q;         // BUFF3
         mhsa_args.att = BUFF4;
         mhsa_args.key_cache = BUFF_W_1;
         mhsa_args.value_cache = BUFF_W_2;
         // mhsa_args.att = s->att;
         // mhsa_args.key_cache = s->key_cache + loff;
         // mhsa_args.value_cache = s->value_cache + loff ;
-        mhsa_args.xb = s->xb; // BUFF2
+        mhsa_args.xb = s->xb;       // BUFF2
         mhsa_args.pos = pos;
         mhsa_args.kv_dim = kv_dim;
         mhsa_args.kv_mul = kv_mul;
@@ -355,8 +381,13 @@ float* forward(Transformer* transformer, int token, int pos) {
 
         pi_cl_dma_wait(&k_cache_to_L1);
         pi_cl_dma_wait(&v_cache_to_L1);
+
+        tmp = pi_perf_read (PI_PERF_CYCLES);
         
         pi_cl_team_fork(NUM_CORES, llama2_mhsa_fp32_cl, &mhsa_args);
+
+        if(pos==STEPS-1 && STATS)
+            printf("forward_l%llu_mhsa: %lu\n", l, pi_perf_read(PI_PERF_CYCLES) - tmp);
 
         pi_cl_dma_wait(&kv_to_L2);
         
@@ -366,60 +397,177 @@ float* forward(Transformer* transformer, int token, int pos) {
         wo_to_L1.size = dim * dim * sizeof(*w->wo);
         wo_to_L1.dir = PI_CL_DMA_DIR_EXT2LOC;
         pi_cl_dma_memcpy(&wo_to_L1);
-        pi_cl_dma_wait(&wo_to_L1);
         
         s->xb2 = BUFF3;
-        
+
+        pi_cl_dma_copy_t rms_ffn_weight_to_L1;
+        rms_ffn_weight_to_L1.loc = (uint32_t) BUFF4;
+        rms_ffn_weight_to_L1.ext = (uint32_t) (w->rms_ffn_weight + l*dim);
+        rms_ffn_weight_to_L1.size = dim * sizeof(*w->rms_ffn_weight);
+        rms_ffn_weight_to_L1.dir = PI_CL_DMA_DIR_EXT2LOC;
+        pi_cl_dma_memcpy(&rms_ffn_weight_to_L1);
+
+        pi_cl_dma_copy_t mm1_ffn_weight_to_L1;
+        mm1_ffn_weight_to_L1.loc = (uint32_t) BUFF_W_2;
+        mm1_ffn_weight_to_L1.ext = (uint32_t) (w->w1 + l*dim*hidden_dim);
+        mm1_ffn_weight_to_L1.size = dim * hidden_dim * sizeof(*w->w1);
+        mm1_ffn_weight_to_L1.dir = PI_CL_DMA_DIR_EXT2LOC;
+        pi_cl_dma_memcpy(&mm1_ffn_weight_to_L1);
+
         // final matmul to get the output of the attention
+        pi_cl_dma_wait(&wo_to_L1);
+
+        tmp = pi_perf_read (PI_PERF_CYCLES);
         matmul(s->xb2, s->xb, BUFF_W_1, dim, dim);
         // matmul(s->xb2, s->xb, w->wo + l*dim*dim, dim, dim);
+        if(pos==STEPS-1 && STATS)
+            printf("forward_l%llu_att_mm: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
 
         // residual connection back into x
         struct vect_sum_args vsa;
-        vsa.op_1 = s->xb2;
-        vsa.op_2 = x;
-        vsa.dest = x;
+        vsa.op_1 = s->xb2;          // BUFF3
+        vsa.op_2 = x;               // BUFF1
+        vsa.dest = x;               // BUFF1
         vsa.size = dim;
+
+        tmp = pi_perf_read (PI_PERF_CYCLES);
         pi_cl_team_fork(NUM_CORES, vect_sum, &vsa);
+
+        if(pos==STEPS-1 && STATS)
+            printf("forward_l%llu_residual_conn: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
         
         // ffn rmsnorm
-        rmsnorm_parallelized_fp32(s->xb, x, w->rms_ffn_weight + l*dim, dim);
+        pi_cl_dma_wait(&rms_ffn_weight_to_L1);
+
+        tmp = pi_perf_read (PI_PERF_CYCLES);
+        rmsnorm_parallelized_fp32(s->xb, x, BUFF4, dim);
+        // rmsnorm_parallelized_fp32(s->xb, x, w->rms_ffn_weight + l*dim, dim);
+
+        if(pos==STEPS-1 && STATS)
+            printf("forward_l%llu_ffn_rmsnorm: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
+
+        s->hb = BUFF3;
+        s->hb2 = BUFF4;
+
+        pi_cl_dma_copy_t mm2_ffn_weight_to_L1;
+        mm2_ffn_weight_to_L1.loc = (uint32_t) BUFF_W_1;
+        mm2_ffn_weight_to_L1.ext = (uint32_t) (w->w3 + l*dim*hidden_dim);
+        mm2_ffn_weight_to_L1.size = dim * hidden_dim * sizeof(*w->w3);
+        mm2_ffn_weight_to_L1.dir = PI_CL_DMA_DIR_EXT2LOC;
+        pi_cl_dma_memcpy(&mm2_ffn_weight_to_L1);
 
         // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
         // first calculate self.w1(x) and self.w3(x)
-        matmul(s->hb, s->xb, w->w1 + l*dim*hidden_dim, dim, hidden_dim);
-        
-        matmul(s->hb2, s->xb, w->w3 + l*dim*hidden_dim, dim, hidden_dim);
+        pi_cl_dma_wait(&mm1_ffn_weight_to_L1);
+
+        tmp = pi_perf_read (PI_PERF_CYCLES);
+        matmul(s->hb, s->xb, BUFF_W_2, dim, hidden_dim);
+        if(pos==STEPS-1 && STATS)
+            printf("forward_l%llu_ffn_mm1: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
+
+        mm1_ffn_weight_to_L1.ext = (uint32_t) (w->w2 + l*dim*hidden_dim);
+        pi_cl_dma_memcpy(&mm1_ffn_weight_to_L1);
+
+        pi_cl_dma_wait(&mm2_ffn_weight_to_L1);
+
+        tmp = pi_perf_read (PI_PERF_CYCLES);
+        matmul(s->hb2, s->xb, BUFF_W_1, dim, hidden_dim);
+        if(pos==STEPS-1 && STATS)
+            printf("forward_l%llu_ffn_mm2: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
+    
+        // matmul(s->hb, s->xb, w->w1 + l*dim*hidden_dim, dim, hidden_dim);
+        // matmul(s->hb2, s->xb, w->w3 + l*dim*hidden_dim, dim, hidden_dim);
         
         // SwiGLU non-linearity
         struct swiglu_args sa;
-        sa.in1 = s->hb;
-        sa.in2 = s->hb2;
-        sa.out = s->hb;
+        sa.in1 = s->hb;             // BUFF3
+        sa.in2 = s->hb2;            // BUFF4
+        sa.out = s->hb;             // BUFF3
         sa.dim = hidden_dim;
+
+        tmp = pi_perf_read (PI_PERF_CYCLES);
+
         pi_cl_team_fork(NUM_CORES, pulp_swiglu_fp32_cl, &sa);
 
+        if(pos==STEPS-1 && STATS)
+            printf("forward_l%llu_ffn_SwiGLU: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
+
         if(l < p->n_layers - 1){
-            rms_att_weight.ext = (uint32_t) (w->rms_att_weight + (l+1)*dim);
-            pi_cl_dma_memcpy(&rms_att_weight); 
+            rms_weight.ext = (uint32_t) (w->rms_att_weight + (l+1)*dim);
+            pi_cl_dma_memcpy(&rms_weight);
         }
 
         // final matmul to get the output of the ffn
-        matmul(s->xb, s->hb, w->w2 + l*dim*hidden_dim, hidden_dim, dim);
+        pi_cl_dma_wait(&mm1_ffn_weight_to_L1);
+
+        tmp = pi_perf_read (PI_PERF_CYCLES);
+
+        matmul(s->xb, s->hb, BUFF_W_2, hidden_dim, dim);
+        // matmul(s->xb, s->hb, w->w2 + l*dim*hidden_dim, hidden_dim, dim);
+        if(pos==STEPS-1 && STATS)
+            printf("forward_l%llu_ffn_mm3: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
         
         // residual connection
-        vsa.op_1 = s->xb;
-        vsa.op_2 = x;
-        vsa.dest = x;
+        vsa.op_1 = s->xb;         // BUFF2
+        vsa.op_2 = x;             // BUFF1
+        vsa.dest = x;             // BUFF1
         vsa.size = dim;
+
+        tmp = pi_perf_read (PI_PERF_CYCLES);
+
         pi_cl_team_fork(NUM_CORES, vect_sum, &vsa);
+
+        if(pos==STEPS-1 && STATS)
+            printf("forward_l%llu_final_residual_conn: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
+    }
+    
+    int mm_div = 4;   // deve essere un divisore di vocab_size
+    int part = p->vocab_size / mm_div;
+    s->logits = BUFF4;
+    
+    pi_cl_dma_copy_t mm_weights_to_BUFF_W_1, mm_weights_to_BUFF_W_2;
+    mm_weights_to_BUFF_W_1.ext = (uint32_t) w->wcls;
+    mm_weights_to_BUFF_W_1.loc = (uint32_t) BUFF_W_1;
+	mm_weights_to_BUFF_W_1.size = dim * part * sizeof(*w->wcls);
+	mm_weights_to_BUFF_W_1.dir = PI_CL_DMA_DIR_EXT2LOC;
+    pi_cl_dma_memcpy(&mm_weights_to_BUFF_W_1);
+
+    mm_weights_to_BUFF_W_2.loc = (uint32_t) BUFF_W_2;
+    mm_weights_to_BUFF_W_2.size = dim * part * sizeof(*w->wcls);
+    mm_weights_to_BUFF_W_2.dir = PI_CL_DMA_DIR_EXT2LOC;
+    
+    // final rmsnorm
+
+    tmp = pi_perf_read (PI_PERF_CYCLES);
+
+    rmsnorm_parallelized_fp32(s->xb, x, w->rms_final_weight, dim);
+
+    if(pos==STEPS-1 && STATS)
+        printf("\nforward_final_rmsnorm: %lu\n", pi_perf_read (PI_PERF_CYCLES) - tmp);
+    
+    tmp = pi_perf_read (PI_PERF_CYCLES);
+
+    for(int i=0; i<mm_div; i+=2){
+        mm_weights_to_BUFF_W_2.ext = (uint32_t) (w->wcls + (i+1)*part*dim);
+        pi_cl_dma_memcpy(&mm_weights_to_BUFF_W_2);
+
+        pi_cl_dma_wait(&mm_weights_to_BUFF_W_1);
+        matmul(s->logits+i*part, s->xb, BUFF_W_1, p->dim, part);
+
+        if(i < mm_div - 2){
+            mm_weights_to_BUFF_W_1.ext = (uint32_t) (w->wcls + (i+2)*part*dim);
+            pi_cl_dma_memcpy(&mm_weights_to_BUFF_W_1);
+        }
+        
+        pi_cl_dma_wait(&mm_weights_to_BUFF_W_2);
+        matmul(s->logits+(i+1)*part, s->xb, BUFF_W_2, p->dim, part);
     }
 
-    // final rmsnorm
-    rmsnorm_parallelized_fp32(s->xb, x, w->rms_final_weight, dim);
-    
+    if(pos==STEPS-1 && STATS)
+        printf("forward_final_matmul: %lu\n\n", pi_perf_read (PI_PERF_CYCLES) - tmp);
+
     // classifier into logits
-    matmul(s->logits, s->xb, w->wcls, p->dim, p->vocab_size);
+    // matmul(s->logits, s->xb, w->wcls, p->dim, p->vocab_size);
 
     return s->logits;
 }
@@ -600,6 +748,7 @@ void encode(Tokenizer* t, char *text, int8_t bos, int8_t eos, int *tokens, int *
         float best_score = -1e10;
         int best_id = -1;
         int best_idx = -1;
+        
         for (int i=0; i < (*n_tokens-1); i++) {
             // check if we can merge the pair (tokens[i], tokens[i+1])
             sprintf(str_buffer, "%s%s", t->vocab[tokens[i]], t->vocab[tokens[i+1]]);
@@ -740,7 +889,7 @@ float random_f32(unsigned long long *state) { // random float32 in [0,1)
     return (random_u32(state) >> 8) / 16777216.0f;
 }
 
-int sample(Sampler* sampler, float* logits) {
+int sample(Sampler* sampler, float* logits, char isLastPos) {
     // sample the token given the logits and some hyperparameters
     int next;
     //printf("sampler->temperature: %f\n", sampler->temperature);
@@ -752,9 +901,14 @@ int sample(Sampler* sampler, float* logits) {
         for (int q=0; q<sampler->vocab_size; q++)
             logits[q] /= sampler->temperature; 
         
+        tmp = pi_perf_read (PI_PERF_CYCLES);
+
         // apply softmax to the logits to get the probabilities for next token
         pulp_vector_softmax_fp32(logits, logits, buffer_n_cores, sampler->vocab_size);
-    
+
+        if(isLastPos)
+            printf("sample_softmax: %lu\n", pi_perf_read(PI_PERF_CYCLES)-tmp);
+
         // flip a (float) coin (this is our source of entropy for sampling)
         float coin = random_f32(&sampler->rng_state);
         // we sample from this distribution to get the next token
@@ -762,8 +916,13 @@ int sample(Sampler* sampler, float* logits) {
             // simply sample from the predicted probability distribution
             next = sample_mult(logits, sampler->vocab_size, coin);
         } else {
+            tmp = pi_perf_read(PI_PERF_CYCLES);
+            
             // top-p (nucleus) sampling, clamping the least likely tokens to zero
             next = sample_topp(logits, sampler->vocab_size, sampler->topp, sampler->probindex, coin);
+
+            if(isLastPos)
+                printf("sample_sample_topp: %lu\n", pi_perf_read(PI_PERF_CYCLES)-tmp);
         }
     }
     return next;
@@ -797,7 +956,12 @@ void net_step(){
     int num_prompt_tokens=0;
     int* prompt_tokens = PROMPT_TOKENS;
 
+    tmp = pi_perf_read (PI_PERF_CYCLES);
+
     encode(&tokenizer, PROMPT, 1, 0, prompt_tokens, &num_prompt_tokens);
+
+    if(STATS)
+        printf("encode: %lu\n", pi_perf_read (PI_PERF_CYCLES) - tmp);
 
     token = prompt_tokens[0];
     for(int pos = 0; pos < steps; pos++ ) {
@@ -806,14 +970,21 @@ void net_step(){
 
         if(pos < num_prompt_tokens -1)
             next = prompt_tokens[pos+1];
-        else
-            next = sample(&sampler, log);
+        else{
+            next = sample(&sampler, log, pos==STEPS-1 && STATS);
+        }
         
         /*
         if(next==1)
-            break; */
+            break; 
+        */
+        tmp = pi_perf_read (PI_PERF_CYCLES);
         
         char* piece = decode(&tokenizer, token, next);
+
+        if(pos==STEPS-1 && STATS)
+            printf("decode: %lu\n\n\n", pi_perf_read( PI_PERF_CYCLES)-tmp);
+
         token = next;
 
         safe_printf(piece);
