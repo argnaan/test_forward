@@ -18,7 +18,7 @@ long unsigned cycle_matmul=0, tmp, tmp2;
 
 PI_L2 float buffer_n_cores[NUM_CORES];
 
-// ----------------------------------------------------------------------------
+// ----------------------------------------------------------s------------------
 // Transformer model
 
 typedef struct {
@@ -191,7 +191,7 @@ void matmul(float* xout, float* x, float* w, int n, int d) {
     cycle_matmul += pi_perf_read (PI_PERF_CYCLES) - tmp;
 }
 
-void rmsnorm(float* o, float* x, float* weight, int size) {
+void rmsnorm_original(float* o, float* x, float* weight, int size) {
     // calculate sum of squares
     float ss = 0.0f;
     for (int j = 0; j < size; j++) {
@@ -267,9 +267,9 @@ float* forward(Transformer* transformer, int token, int pos) {
         tmp = pi_perf_read (PI_PERF_CYCLES);
 
         #ifdef RMSNORM_PARALLELIZED
-        rmsnorm_parallelized_fp32(s->xb, x, w->rms_att_weight + l*dim, dim);
+        rmsnorm_parallelized_fp32(s->xb, x, w->rms_att_weight + l*dim, buffer_n_cores, dim);
         #else
-        rmsnorm(s->xb, x, w->rms_att_weight + l*dim, dim);
+        rmsnorm_original(s->xb, x, w->rms_att_weight + l*dim, dim);
         #endif
 
         if(pos==STEPS-1 && STATS)
@@ -443,9 +443,9 @@ float* forward(Transformer* transformer, int token, int pos) {
         tmp = pi_perf_read (PI_PERF_CYCLES);
         
         #ifdef RMSNORM_PARALLELIZED
-        rmsnorm_parallelized_fp32(s->xb, x, w->rms_ffn_weight + l*dim, dim);
+        rmsnorm_parallelized_fp32(s->xb, x, w->rms_ffn_weight + l*dim, buffer_n_cores, dim);
         #else
-        rmsnorm(s->xb, x, w->rms_ffn_weight + l*dim, dim);
+        rmsnorm_original(s->xb, x, w->rms_ffn_weight + l*dim, dim);
         #endif
 
         if(pos==STEPS-1 && STATS)
@@ -526,9 +526,9 @@ float* forward(Transformer* transformer, int token, int pos) {
     // final rmsnorm
     tmp = pi_perf_read (PI_PERF_CYCLES);
     #ifdef RMSNORM_PARALLELIZED
-    rmsnorm_parallelized_fp32(s->xb, x, w->rms_final_weight, dim);
+    rmsnorm_parallelized_fp32(s->xb, x, w->rms_final_weight, buffer_n_cores, dim);
     #else
-    rmsnorm(s->xb, x, w->rms_final_weight, dim);
+    rmsnorm_original(s->xb, x, w->rms_final_weight, dim);
     #endif
     
     if(pos==STEPS-1 && STATS)
