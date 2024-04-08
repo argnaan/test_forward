@@ -262,7 +262,7 @@ float* forward(Transformer* transformer, int token, int pos) {
 
         tmp = pi_perf_read (PI_PERF_CYCLES);
 
-        rmsnorm_parallelized_fp32(s->xb, x, BUFF4, dim);
+        rmsnorm_parallelized_fp32(s->xb, x, BUFF4, buffer_n_cores, dim);
         // rmsnorm_parallelized_fp32(s->xb, x, w->rms_att_weight + l*dim, dim);
         if(pos==STEPS-1 && STATS)
             printf("\nforward_l%llu_rmsorm: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
@@ -440,7 +440,7 @@ float* forward(Transformer* transformer, int token, int pos) {
         pi_cl_dma_wait(&rms_ffn_weight_to_L1);
 
         tmp = pi_perf_read (PI_PERF_CYCLES);
-        rmsnorm_parallelized_fp32(s->xb, x, BUFF4, dim);
+        rmsnorm_parallelized_fp32(s->xb, x, BUFF4, buffer_n_cores, dim);
         // rmsnorm_parallelized_fp32(s->xb, x, w->rms_ffn_weight + l*dim, dim);
 
         if(pos==STEPS-1 && STATS)
@@ -540,7 +540,7 @@ float* forward(Transformer* transformer, int token, int pos) {
 
     tmp = pi_perf_read (PI_PERF_CYCLES);
 
-    rmsnorm_parallelized_fp32(s->xb, x, w->rms_final_weight, dim);
+    rmsnorm_parallelized_fp32(s->xb, x, w->rms_final_weight, buffer_n_cores, dim);
 
     if(pos==STEPS-1 && STATS)
         printf("\nforward_final_rmsnorm: %lu\n", pi_perf_read (PI_PERF_CYCLES) - tmp);
