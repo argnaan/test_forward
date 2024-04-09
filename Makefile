@@ -1,4 +1,4 @@
-APP = test_forward
+APP = pulp_llama2
 
 # set WEIGHTS_PATH=NULL for random weights generation
 WEIGHTS_PATH ?= utils/stories260K.bin
@@ -57,3 +57,8 @@ clean_all:
 	rm -f token_and_logits.h
 	rm -f conf_and_weights.h
 	rm -rf BUILD/
+
+copy_trainlib_files:
+	cp --backup=nil -S_old pulp-trainlib-modifiche/lib/include/* $(TRAIN_LIB)/include/
+	cp --backup=nil -S_old pulp-trainlib-modifiche/lib/sources/* $(TRAIN_LIB)/sources/
+	@echo "\nFile copiati nella cartella di pulp-trainlib. I file originali sostituiti sono stati rinominati con suffisso _old\n"
