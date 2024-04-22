@@ -15,7 +15,14 @@
  */
 
 #include "pmsis.h"
-#include "net.h"
+/*
+#if DATA_TYPE == fp32
+#include "fp32/net.h"
+#else
+#include "fp16/net.h"
+#endif
+*/
+#include "fp16/net.h"
 
 /*
 *  DUMMY MAIN

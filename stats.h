@@ -23,7 +23,7 @@
 
 #else
 
-#ifdef STATS
+// #ifdef STATS
 
 #define INIT_STATS() \
     unsigned long _cycles = 0; \
@@ -72,7 +72,7 @@
     printf("[%d] ld stall = %lu\n", id, _ldstall); \
     printf("[%d] imiss = %lu\n", id, _imiss); 
 
-#else // STATS
+/* #else // STATS
 
 #define INIT_STATS()
 #define PRE_START_STATS()
@@ -80,7 +80,7 @@
 #define STOP_STATS()
 
 #endif  // STATS
-
+*/
 
 #endif 
 
