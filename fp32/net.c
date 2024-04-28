@@ -12,18 +12,7 @@
 
 long unsigned tmp, cycle_matmul = 0;
 
-PI_L1 float cos_freq[DIM/N_HEADS], sin_freq[DIM/N_HEADS]; // usate per la RoPE
-PI_L1 float cos_prec[DIM/N_HEADS], sin_prec[DIM/N_HEADS];
-
 PI_L1 float buffer_n_cores[NUM_CORES];
-
-PI_L1 float BUFF1[64];          // DIM
-PI_L1 float BUFF2[64];          // DIM
-PI_L1 float BUFF3[172];         // HIDDEN_DIM
-PI_L1 float BUFF4[2048];        // N_HEAD * STEPS
-
-PI_L1 float BUFF_W_1[11008];    // DIM * HIDDEN_DIM
-PI_L1 float BUFF_W_2[11008];    // DIM * HIDDEN_DIM
 
 // ----------------------------------------------------------------------------
 // Transformer model
@@ -348,6 +337,16 @@ float* forward(Transformer* transformer, int token, int pos) {
         tmp = pi_perf_read (PI_PERF_CYCLES);
 
         // RoPE relative positional encoding: complex-valued rotate q and k in each head    
+        struct rope_args ra;
+        ra.q = s->q;
+        ra.k = s->k;
+        ra.dim = dim;
+        ra.head_size = head_size;
+        ra.pos = pos;
+        ra.kv_dim = kv_dim;
+
+        pi_cl_team_fork(NUM_CORES, rope_parallelized_fp32_cl, &ra);
+        /*
         for (int i = 0; i < dim; i+=2) {
             int head_dim = i % head_size;
             float freq = 1.0f / powf(10000.0f, head_dim / (float)head_size);
@@ -363,10 +362,10 @@ float* forward(Transformer* transformer, int token, int pos) {
                 vec[i+1] = v0 * fci + v1 * fcr;
             }
         }
-        
+        */
         #ifdef STATS
         if(pos==STEPS-1)
-            printf("forward_l%llu_RoPE: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
+            printf("forward_l%llu_RoPE: %lu \n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
         #endif
         // trasferimento del vettore k nella key cache
         kv_to_L2.loc = (uint32_t) s->k;

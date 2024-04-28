@@ -33,6 +33,15 @@ struct llama2_mhsa_args_fp16{
     int steps;
 };
 
+struct rope_args_fp16{
+    fp16* q;
+    fp16* k;
+    int pos;
+    int dim;
+    int head_size;
+    int kv_dim;
+};
+
 
 void quickSort(ProbIndex* a, int l, int h);
 
@@ -41,3 +50,5 @@ void *bsearch (const void *key, const void *base0, size_t nmemb, size_t size, in
 void softmax_original_fp16(fp16* x, int size);
 
 void llama2_mhsa_fp16_cl(void *llama2_mhsa_args);
+
+void rope_parallelized_fp16_cl(void* void_args);

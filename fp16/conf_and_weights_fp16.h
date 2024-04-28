@@ -8,11 +8,19 @@
 #define SEQ_LEN 256
 #define KV_DIM 32
 #define STEPS 256
-#define TEMPERATURE 1.000000
+#define TEMPERATURE 0.000f
 #define RND_SEED 100
 
 PI_L2 char* PROMPT = "Tim was very happy";
 PI_L2 int PROMPT_TOKENS[21];
+// Allocazioni buffer in L1
+PI_L1 fp16 BUFF1[64];
+PI_L1 fp16 BUFF2[64];
+PI_L1 fp16 BUFF3[172];
+PI_L1 fp16 BUFF4[2048];
+
+PI_L1 fp16 BUFF_W_1[11008];
+PI_L1 fp16 BUFF_W_2[11008];
 
 // Allocazioni per il RunState
 PI_L2 fp16 KEY_CACHE [N_LAYERS*STEPS*KV_DIM];

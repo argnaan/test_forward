@@ -14,14 +14,6 @@ long unsigned tmp;
 
 PI_L1 fp16 buffer_n_cores[NUM_CORES];
 
-PI_L1 fp16 BUFF1[64]; 
-PI_L1 fp16 BUFF2[64];  
-PI_L1 fp16 BUFF3[172]; 
-PI_L1 fp16 BUFF4[2048]; 
-
-PI_L1 fp16 BUFF_W_1[11008]; 
-PI_L1 fp16 BUFF_W_2[11008];
-
 // ----------------------------------------------------------------------------
 // Transformer model
 
@@ -347,6 +339,16 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         #endif
 
         // RoPE relative positional encoding: complex-valued rotate q and k in each head
+        struct rope_args_fp16 ra;
+        ra.q = s->q;
+        ra.k = s->k;
+        ra.dim = dim;
+        ra.head_size = head_size;
+        ra.pos = pos;
+        ra.kv_dim = kv_dim;
+
+        pi_cl_team_fork(NUM_CORES, rope_parallelized_fp16_cl, &ra);
+        /*
         for (int i = 0; i < dim; i+=2) {
             int head_dim = i % head_size;
             float freq = 1.0f / powf(10000.0f, head_dim / (float)head_size);
@@ -362,7 +364,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
                 vec[i+1] = (fp16) (v0 * fci + v1 * fcr);
             }
         }
-
+        */
         #ifdef STATS
         if(pos==STEPS-1)
             printf("forward_l%llu_RoPE: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);

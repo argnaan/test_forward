@@ -10,6 +10,8 @@
 #define WEIGHTS_HEADER "fp32/conf_and_weights.h"
 #define TOKENIZER_PATH "fp32/utils/tokenizer.bin"
 
+#define NUM_CORES 8
+
 typedef struct {
     int dim; // transformer dimension
     int hidden_dim; // for ffn layers
@@ -41,6 +43,10 @@ typedef struct {
 
 int compare_tokens(const void *a, const void *b) {
     return strcmp(((TokenIndex*)a)->str, ((TokenIndex*)b)->str);
+}
+
+int max(int a, int b){
+    return a>b? a : b;
 }
 
 int main(int argc, char* argv[]){
@@ -116,7 +122,7 @@ int main(int argc, char* argv[]){
         w = data + sizeof(Config)/sizeof(float);
         w_dim = c.dim * (c.vocab_size + c.n_layers*(2 + 2*c.dim + head_size*c.n_kv_heads*2 + 3*c.hidden_dim) + 1);
     }
-    printf("w_dim: %d\n", w_dim);
+    
     FILE* fh = fopen(WEIGHTS_HEADER, "w");
     if(fh==NULL){
         printf("Errore: impossible creare il file conf_and_weights.h\n");
@@ -135,46 +141,31 @@ int main(int argc, char* argv[]){
     fprintf(fh, "#define SEQ_LEN %d\n", c.seq_len);
     fprintf(fh, "#define KV_DIM %d\n", c.dim * c.n_kv_heads / c.n_heads);
     fprintf(fh, "#define STEPS %d\n", steps);
-    fprintf(fh, "#define TEMPERATURE %f\n", temperature);
+    fprintf(fh, "#define TEMPERATURE %.3ff\n", temperature);
     fprintf(fh, "#define RND_SEED %d\n\n", rnd_seed);
 
     fprintf(fh, "PI_L2 char* PROMPT = \"%s\";\n", prompt);
     fprintf(fh, "PI_L2 int PROMPT_TOKENS[%ld];\n", strlen(prompt)+3);
 
+    int buff1_dim = c.dim;
+    int buff2_dim = c.dim;
+    int buff3_dim = max(c.dim, c.hidden_dim);
+    int buff4_dim = max(max(c.dim, c.vocab_size), max(c.n_heads*steps, c.hidden_dim));
+
+    int buff_w_dim = max(max(c.dim*c.dim, steps*c.dim*c.n_kv_heads/c.n_heads), c.dim*c.hidden_dim);
+ 
+    fprintf(fh, "// Allocazioni buffer in L1\n");
+    fprintf(fh, "PI_L1 float BUFF1[%d];\n", buff1_dim);
+    fprintf(fh, "PI_L1 float BUFF2[%d];\n", buff2_dim);
+    fprintf(fh, "PI_L1 float BUFF3[%d];\n", buff3_dim);
+    fprintf(fh, "PI_L1 float BUFF4[%d];\n\n", buff4_dim);
+
+    fprintf(fh, "PI_L1 float BUFF_W_1[%d];\n", buff_w_dim);
+    fprintf(fh, "PI_L1 float BUFF_W_2[%d];\n", buff_w_dim);
+
     fprintf(fh,"\n// Allocazioni per il RunState\n");
- /*
-    fprintf(fh, "PI_L2 float X [DIM];\n");
-    fprintf(fh, "PI_L2 float XB [DIM];\n");
-    fprintf(fh, "PI_L2 float XB2 [DIM];\n");
-    fprintf(fh, "PI_L2 float HB [HIDDEN_DIM];\n");
-    fprintf(fh, "PI_L2 float HB2 [HIDDEN_DIM];\n");
-    fprintf(fh, "PI_L2 float Q [DIM];\n");
-*/
     fprintf(fh, "PI_L2 float KEY_CACHE [N_LAYERS*STEPS*KV_DIM];\n");
     fprintf(fh, "PI_L2 float VALUE_CACHE [N_LAYERS*STEPS*KV_DIM];\n");
-/*
-    fprintf(fh, "PI_L2 float ATT[N_HEADS*STEPS];\n");
-    fprintf(fh, "PI_L2 float LOGITS [VOCAB_SIZE];\n\n");
-*/
-
-    int size_1, size_2, size_4;
-    if(c.hidden_dim > c.dim){
-        size_1 = c.hidden_dim;
-        size_2 = c.hidden_dim > steps ? c.hidden_dim : steps;
-    }
-    else{
-        size_1 = c.dim;
-        size_2 = c.dim > steps ? c.dim : steps;
-    }
-    size_4 = c.dim;
-/*
-    fprintf(fh, "PI_L1 float BUFF1[%d];\n", size_1);
-    fprintf(fh, "PI_L1 float BUFF2[%d];\n", size_2);
-    fprintf(fh, "PI_L1 float BUFF3[%d];\n", size_2);
-    fprintf(fh, "PI_L1 float BUFF4[%d];\n", size_4);
-    fprintf(fh, "PI_L1 float BUFF_W_1[%d];\n", c.dim*c.hidden_dim);
-    fprintf(fh, "PI_L1 float BUFF_W_2[%d];\n\n", c.dim*c.hidden_dim);
- */   
 
     fprintf(fh, "\nPI_L2 char PROB_INDEX [VOCAB_SIZE*%ld];\n\n", sizeof(ProbIndex));
 
@@ -196,7 +187,7 @@ int main(int argc, char* argv[]){
         printf("Errore nella lettura di %s\n", TOKENIZER_PATH);
         exit(1);
     }
-    int len, tot_size=0;
+    int len, tot_vocab_size=0;
     for(int i=0; i<c.vocab_size; i++){
         if(fread(t.vocab_scores+i, sizeof(float), 1, file_tok)!=1){
             printf("Errore in fread\n");
@@ -207,7 +198,7 @@ int main(int argc, char* argv[]){
             exit(1);
         }
         t.vocab[i] = (char *)malloc(len+1);
-        tot_size += len+1;
+        tot_vocab_size += len+1;
         if(fread(t.vocab[i], sizeof(char), len, file_tok)!=len){
             printf("Errore in fread\n");
             exit(1);
@@ -222,14 +213,14 @@ int main(int argc, char* argv[]){
     fprintf(fh, "PI_L2 float VOCAB_SCORES [VOCAB_SIZE] = {\n");
     int i;
     for(i=0;i<c.vocab_size-1;i++){
-        fprintf(fh, "%f, ", t.vocab_scores[i]);
+        fprintf(fh, "%ff, ", t.vocab_scores[i]);
         if(i%10==9)
             fprintf(fh, "\n");
     }
-    fprintf(fh, "%f};\n\n", t.vocab_scores[i]);
+    fprintf(fh, "%ff};\n\n", t.vocab_scores[i]);
 
     fprintf(fh, "PI_L2 char* VOCAB[VOCAB_SIZE];\n");
-    fprintf(fh, "PI_L2 unsigned char VOCAB_DATA [%d] = {\n", tot_size);
+    fprintf(fh, "PI_L2 unsigned char VOCAB_DATA [%d] = {\n", tot_vocab_size);
     for(i=0;i<c.vocab_size;i++){
         int j=0;
         while(t.vocab[i][j]!='\0')
@@ -271,7 +262,21 @@ int main(int argc, char* argv[]){
     }
     fprintf(fh, "%.10f};", w[i]);
     fclose(fh);
-    printf("Scrittura di conf_and_weights.h completata\n");
+    printf("Scrittura di %s completata\n", WEIGHTS_HEADER);
+
+    int tot_L1 = buff1_dim + buff2_dim + buff3_dim + buff4_dim + 2*buff_w_dim + NUM_CORES;
+    tot_L1 *= sizeof(float);
+
+    int tot_L2 = (2*c.n_layers * steps * c.dim * c.n_kv_heads / c.n_heads) * sizeof(float); // KV_CACHE
+    tot_L2 += c.vocab_size * (sizeof(int) + sizeof(float)); // PROB_INDEX
+    tot_L2 += c.vocab_size * sizeof(float); // VOCAB_SCORES
+    tot_L2 += c.vocab_size * sizeof(char*); // VOCAB
+    tot_L2 += tot_vocab_size * sizeof(char); // VOCAB_DATA
+    tot_L2 += tot_vocab_size * sizeof(char) + c.vocab_size * (sizeof(char*) + sizeof(int)); // SORTED_VOCAB
+    tot_L2 += w_dim * sizeof(float);
+
+    printf("\nUtilizzo di memoria L1: %d Byte (%g kB)\n", tot_L1, tot_L1/1024.0f);
+    printf("Utilizzo di memoria L2: %d Byte (%g kB)\n", tot_L2, tot_L2/1024.0f);
+    
     return 0;
 }
-

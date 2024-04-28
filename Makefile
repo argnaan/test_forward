@@ -14,7 +14,7 @@ SEQ_LEN ?= 512
 
 # other option 
 STEPS ?= 256
-TEMPERATURE ?= 1.0
+TEMPERATURE ?= 0.0
 RND_SEED ?= 100
 PROMPT ?= "Tim was very happy"
 
@@ -56,8 +56,8 @@ APP_CFLAGS += -DDATA_TYPE=$(DATA_TYPE)
 
 NUM_CORES ?= 8
 APP_CFLAGS += -DNUM_CORES=$(NUM_CORES)
-#APP_CFLAGS += -DFASTEXPF # usa la fast expf al posto della expf standard
-#APP_CFLAGS += -DQ_RSQRT
+APP_CFLAGS += -DFASTEXPF # usa la fast expf al posto della expf standard
+APP_CFLAGS += -DQ_RSQRT
 
 APP_CFLAGS += -DOUTPUT
 APP_CFLAGS += -DSTATS=1

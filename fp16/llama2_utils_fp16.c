@@ -1,7 +1,7 @@
 #include <string.h>
 #include <math.h>
 #include "llama2_utils_fp16.h"
-#include "pulp_train_utils_fp16.h"
+#include "pulp_train.h" 
 
 int part(ProbIndex* a, int l, int h){
     float p = a[h].prob;
@@ -103,12 +103,22 @@ void llama2_mhsa_fp16_cl(void *llama2_mhsa_args){
                 // get the key vector for this head and at this timestep
                 fp16* k = args->key_cache + t * kv_dim + (h / kv_mul) * head_size;
                 // calculate the attention score as the dot product of q and k
-                fp16 score = 0.0;
                 
+                /*
+                fp16 score;
                 for (int i = 0; i < head_size; i++) {
-                    score += q[i] * k[i];
+                    score += q[i]*k[i];
                 }
-                //printf("\t qk prod done, pos = %d\n", pos);
+                */
+                v2f16 temp = (v2f16) {0, 0};
+                v2f16 A,B;
+                for (int i = 0; i < head_size; i+=2) {
+                    A = *((v2f16*) &q[i]);
+                    B = *((v2f16*) &k[i]);
+                    temp += A * B;
+                }
+                fp16 score = temp[0] + temp[1];
+                
                 score /= (fp16) sqrtf(head_size);
                 // score *= q_rsqrt(head_size);             // non migliora le prestazioni
 
@@ -131,6 +141,44 @@ void llama2_mhsa_fp16_cl(void *llama2_mhsa_args){
                 for (int i = 0; i < head_size; i++) {
                     xb[i] += a * v[i];
                 }
+            }
+    }
+}
+
+
+void rope_parallelized_fp16_cl(void* void_args){
+    struct rope_args_fp16* args = (struct rope_args_fp16* ) void_args;
+    int head_size = args->head_size;
+    int dim = args->dim;
+    int kv_dim = args->kv_dim;
+    int pos = args->pos;
+
+    int id = pi_core_id();
+
+    int head_dim = (id*2) % head_size;
+    #ifdef FASTEXPF
+    fp16 freq = 1.0f / fastexp_gist_fp16(9.21034037198 * head_dim / (float)head_size);
+    #else
+    fp16 freq = 1.0f / powf(10000.0f, head_dim/ (float)head_size);
+    #endif
+
+    fp16 val = pos*freq;
+    fp16 fcr, fci;
+
+    if(val <= 200){
+        fcr = (fp16) cosf((float) val);
+        fci = (fp16) sinf((float) val);
+    } else
+       cordic_cos_sin_fp16(val, &fcr, &fci);
+
+    for(int i=id*2; i < dim ; i+=2*NUM_CORES){
+        int rotn = i < kv_dim ? 2 : 1; // how many vectors? 2 = q & k, 1 = q only
+            for (int v = 0; v < rotn; v++) {
+                fp16* vec = v == 0 ? args->q : args->k; // the vector to rotate (query or key)
+                fp16 v0 = vec[i];
+                fp16 v1 = vec[i+1];
+                vec[i]   = v0 * fcr - v1 * fci;
+                vec[i+1] = v0 * fci + v1 * fcr;
             }
     }
 }

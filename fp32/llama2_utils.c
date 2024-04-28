@@ -1,4 +1,5 @@
 #include "llama2_utils.h"
+#include "pulp_train.h" 
 #include <string.h>
 #include <math.h>
 
@@ -104,6 +105,45 @@ void llama2_mhsa_fp32_cl(void *llama2_mhsa_args){
                 for (int i = 0; i < head_size; i++) {
                     xb[i] += a * v[i];
                 }
+            }
+    }
+}
+
+void rope_parallelized_fp32_cl(void* void_args){
+    struct rope_args* args = (struct rope_args* ) void_args;
+    int head_size = args->head_size;
+    int dim = args->dim;
+    int kv_dim = args->kv_dim;
+    int pos = args->pos;
+
+    int id = pi_core_id();
+
+    int head_dim = (id*2) % head_size;
+    
+    #ifdef FAST_EXPF
+    float freq = 1.0f / fastexp_gist(9.21034037198 * head_dim / (float)head_size);
+    #else
+    float freq = 1.0f / powf(10000.0f, head_dim/ (float)head_size);
+    #endif
+
+    float val = pos*freq;
+
+    float fcr, fci;
+
+    if(pos <= 200){
+        fcr = cosf(val);
+        fci = sinf(val);
+    } else
+       cordic_cos_sin_fp32(val, &fcr, &fci);
+
+    for(int i=id*2; i < dim ; i+=2*NUM_CORES){
+        int rotn = i < kv_dim ? 2 : 1; // how many vectors? 2 = q & k, 1 = q only
+            for (int v = 0; v < rotn; v++) {
+                float* vec = v == 0 ? args->q : args->k; // the vector to rotate (query or key)
+                float v0 = vec[i];
+                float v1 = vec[i+1];
+                vec[i]   = v0 * fcr - v1 * fci;
+                vec[i+1] = v0 * fci + v1 * fcr;
             }
     }
 }

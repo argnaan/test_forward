@@ -163,7 +163,7 @@ void read_checkpoint(char* checkpoint, Config* config, TransformerWeights* weigh
     Config c = *config;
     int head_size = c.dim / c.n_heads;
     int w_dim = c.dim * (c.vocab_size + c.n_layers*(2 + 2*c.dim + head_size*c.n_kv_heads*2 + 3*c.hidden_dim) + 1);
-    printf("w_dim in run.c: %d\n", w_dim);
+    // printf("w_dim in run.c: %d\n", w_dim);
 }
 
 void build_transformer(Transformer *t, char* checkpoint_path) {
@@ -754,11 +754,13 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
         fprintf(stderr, "something is wrong, expected at least 1 prompt token\n");
         exit(EXIT_FAILURE);
     }
+    /*
     printf("ENCODED TOKENS: (%d)\n", num_prompt_tokens);
     for(int i=0;i<num_prompt_tokens;i++){
         printf("%d, ", prompt_tokens[i]);
     }
-
+    */
+   
     // start the main loop
     long start = 0;  // used to time our code, only initialized after first iteration
     int next;        // will store the next token in the sequence
@@ -1004,8 +1006,9 @@ int main(int argc, char *argv[]) {
     if (temperature < 0.0) temperature = 0.0;
     if (topp < 0.0 || 1.0 < topp) topp = 0.9;
     if (steps < 0) steps = 0;
-    printf("Temperature: %f\n", temperature);
-    printf("Random Seed: %lld\n", rng_seed);
+    
+    // printf("Temperature: %f\n", temperature);
+    // printf("Random Seed: %lld\n", rng_seed);
     // build the Transformer via the model .bin file
     Transformer transformer;
     build_transformer(&transformer, checkpoint_path);
