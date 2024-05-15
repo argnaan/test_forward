@@ -130,16 +130,6 @@ void read_checkpoint(Config* config, TransformerWeights* weights, int* fd, fp16*
 }
 
 void malloc_run_state(RunState* s, Config* p) {
-    /*
-    s->x = X;
-    s->xb = XB;
-    s->xb2 = XB2;
-    s->hb = HB;
-    s->hb2 = HB2;
-    s->q = Q;
-    s->att = ATT;
-    s->logits = LOGITS;
-    */
     s->key_cache = KEY_CACHE;
     s->value_cache = VALUE_CACHE;
 }
@@ -169,21 +159,6 @@ void matmul(fp16* xout, fp16* x, fp16* w, int n, int d) {
     pi_cl_team_fork(NUM_CORES, mm_manager_fp16, &man_args1);
 */
     pi_cl_team_fork(NUM_CORES, mv_fp16_SIMD_8x1, &mm_args);
-    
-    /*
-    // Original matmul: 
-
-    // W (d,n) @ x (n,) -> xout (d,)
-    // by far the most amount of time is spent inside this little function
-    int i;
-    for (i = 0; i < d; i++) {
-        fp16 val = 0.0;
-        for (int j = 0; j < n; j++) {
-            val += w[i * n + j] * x[j];
-        }
-        xout[i] = val;
-    }
-    */
 }
 
 fp16* forward(Transformer* transformer, int token, int pos) {
@@ -193,9 +168,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
     TransformerWeights* w = &transformer->weights;
     RunState* s = &transformer->state;
     int dim = p->dim;
-    // fp16* x = s->x;
     int kv_dim = (p->dim * p->n_kv_heads) / p->n_heads;
-    // printf("kv_dim : %d\n", kv_dim);
     int kv_mul = p->n_heads / p->n_kv_heads; // integer multiplier of the kv sharing in multiquery
     int hidden_dim =  p->hidden_dim;
     int head_size = dim / p->n_heads;
@@ -203,7 +176,6 @@ fp16* forward(Transformer* transformer, int token, int pos) {
     // copy the token embedding into x
     fp16* content_row = w->token_embedding_table + token * dim;
 
-    // memcpy(x, content_row, dim*sizeof(*x));
     fp16* x = BUFF1;
     
     // trasferimento di memora dalla token embedding table al vettore x (BUFF1)
@@ -240,15 +212,14 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         kv_weight.dir = PI_CL_DMA_DIR_EXT2LOC;
         pi_cl_dma_memcpy(&kv_weight);
 
-        pi_cl_dma_wait(&token_emb_table_to_x);
-        pi_cl_dma_wait(&rms_weight);
+        // pi_cl_dma_wait(&token_emb_table_to_x);
+        pi_cl_dma_wait(&rms_weight);                // necessario
 
         #ifdef STATS
         tmp = pi_perf_read (PI_PERF_CYCLES);
         #endif
 
         rmsnorm_parallelized_fp16(s->xb, x, BUFF4, buffer_n_cores, dim);
-        // rmsnorm_parallelized_fp16(s->xb, x, w->rms_att_weight + l*dim, dim);
 
         #ifdef STATS
         if(pos==STEPS-1)
@@ -272,7 +243,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         #endif
 
         matmul(BUFF4, s->xb, BUFF_W_2, dim, kv_dim);
-        // matmul(s->v, s->xb, BUFF_W_2, dim, kv_dim);
+
         #ifdef STATS
         if(pos==STEPS-1)
             printf("forward_l%llu_matmul_v: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
@@ -295,7 +266,6 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         tmp = pi_perf_read (PI_PERF_CYCLES);
 
         matmul(s->q, s->xb, BUFF_W_1, dim, dim);
-        // matmul(s->q, s->xb, w->wq + l*dim*dim, dim, dim);
         
         #ifdef STATS
         if(pos==STEPS-1)
@@ -318,7 +288,6 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         #endif
 
         matmul(s->k, s->xb, BUFF_W_2, dim, kv_dim);
-        // matmul(s->k, s->xb, w->wk + l*dim*kv_dim, dim, kv_dim);
         
         #ifdef STATS
         if(pos==STEPS-1)
@@ -348,23 +317,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         ra.kv_dim = kv_dim;
 
         pi_cl_team_fork(NUM_CORES, rope_parallelized_fp16_cl, &ra);
-        /*
-        for (int i = 0; i < dim; i+=2) {
-            int head_dim = i % head_size;
-            float freq = 1.0f / powf(10000.0f, head_dim / (float)head_size);
-            float val = pos * freq;
-            float fcr = cosf(val);
-            float fci = sinf(val);
-            int rotn = i < kv_dim ? 2 : 1; // how many vectors? 2 = q & k, 1 = q only
-            for (int v = 0; v < rotn; v++) {
-                fp16* vec = v == 0 ? s->q : s->k; // the vector to rotate (query or key)
-                float v0 = (float) vec[i];
-                float v1 = (float) vec[i+1];
-                vec[i]   = (fp16) (v0 * fcr - v1 * fci);
-                vec[i+1] = (fp16) (v0 * fci + v1 * fcr);
-            }
-        }
-        */
+
         #ifdef STATS
         if(pos==STEPS-1)
             printf("forward_l%llu_RoPE: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
@@ -384,9 +337,6 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         mhsa_args.att = BUFF4;
         mhsa_args.key_cache = BUFF_W_1;
         mhsa_args.value_cache = BUFF_W_2;
-        // mhsa_args.att = s->att;
-        // mhsa_args.key_cache = s->key_cache + loff;
-        // mhsa_args.value_cache = s->value_cache + loff ;
         mhsa_args.xb = s->xb;       // BUFF2
         mhsa_args.pos = pos;
         mhsa_args.kv_dim = kv_dim;
@@ -401,12 +351,8 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         #ifdef STATS
         tmp = pi_perf_read (PI_PERF_CYCLES);
         #endif
-        
-        // printf("\t entering mhsa, pos %d\n", pos);
 
         pi_cl_team_fork(NUM_CORES, llama2_mhsa_fp16_cl, &mhsa_args);
-
-        // printf("\t mhsa done\n");
 
         #ifdef STATS
         if(pos==STEPS-1)
@@ -446,7 +392,6 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         #endif
 
         matmul(s->xb2, s->xb, BUFF_W_1, dim, dim);
-        // matmul(s->xb2, s->xb, w->wo + l*dim*dim, dim, dim);
         
         #ifdef STATS
         if(pos==STEPS-1)
@@ -991,11 +936,11 @@ int sample(Sampler* sampler, fp16* logits, char isLastPos) {
 }
 
 void net_step(){
-    // #ifdef STATS
+    #if defined(STATS) || !defined(OUTPUT)
     INIT_STATS();
     PRE_START_STATS();
     START_STATS();
-    //#endif
+    #endif
 
     int steps = STEPS;
     float temperature = TEMPERATURE;
@@ -1027,11 +972,7 @@ void net_step(){
     token = prompt_tokens[0];
     for(int pos = 0; pos < steps; pos++ ) {
 
-        // printf("\t entering forward pos = %d\n", pos);
-
         log = forward(&transformer, token, pos);
-
-        // printf("\t forward done pos = %d\n", pos);
         
         if(pos < num_prompt_tokens -1)
             next = prompt_tokens[pos+1];
@@ -1060,9 +1001,9 @@ void net_step(){
 
     printf("\n\n");
 
-    //#ifdef STATS
+    #if defined(STATS) || !defined(OUTPUT)
     STOP_STATS();
-    //#endif
+    #endif
 
     printf("\n\n-------------------------------------------------------\n\n");
     return;

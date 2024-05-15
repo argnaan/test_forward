@@ -5,3 +5,6 @@ utils/genRndWeights
 utils/rnd_weights.bin
 utils/run
 .vscode/
+fp16/utils/genWeights
+fp32/utils/genWeights
+dis.S

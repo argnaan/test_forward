@@ -85,12 +85,19 @@ void llama2_mhsa_fp16_cl(void *llama2_mhsa_args){
     int head_size = args->head_size;
     int n_heads = args->n_heads;
     int STEPS = args->steps;
+    const fp16 sqrt_head_size = (fp16) sqrtf(head_size);
 
+    int id = pi_core_id();
 
     const uint32_t blockSize = (n_heads + NUM_CORES-1) / NUM_CORES;
     const uint32_t start = pi_core_id()*blockSize;
     const uint32_t stop = start+blockSize > n_heads ? n_heads : start+blockSize;
 
+    #ifdef STATS
+    long unsigned temp_cycles;
+    if(id==0 && pos==STEPS-1)
+        temp_cycles = pi_perf_read(PI_PERF_CYCLES);
+    #endif
 
     for (int h = start; h < stop; h++) {
             // get the query vector for this head
@@ -99,17 +106,12 @@ void llama2_mhsa_fp16_cl(void *llama2_mhsa_args){
             fp16* att = args->att + h * (STEPS+1);
             // iterate over all timesteps, including the current one
 
+            /*
             for (int t = 0; t <= pos; t++) {
                 // get the key vector for this head and at this timestep
                 fp16* k = args->key_cache + t * kv_dim + (h / kv_mul) * head_size;
                 // calculate the attention score as the dot product of q and k
                 
-                /*
-                fp16 score;
-                for (int i = 0; i < head_size; i++) {
-                    score += q[i]*k[i];
-                }
-                */
                 v2f16 temp = (v2f16) {0, 0};
                 v2f16 A,B;
                 for (int i = 0; i < head_size; i+=2) {
@@ -125,9 +127,100 @@ void llama2_mhsa_fp16_cl(void *llama2_mhsa_args){
                 // save the score to the attention buffer
                 att[t] = score;
             }
+            */
+            fp16 max_val = -100000;
+            int t;
+            for(t=0; t <= pos-3; t+=4) {
+                // get the key vector for this head and at this timestep
+                fp16* k = args->key_cache + t * kv_dim + (h / kv_mul) * head_size;
+                // calculate the attention score as the dot product of q and k
+                
+                v2f16 temp1 = (v2f16) {0, 0};
+                v2f16 temp2 = (v2f16) {0, 0};
+                v2f16 temp3 = (v2f16) {0, 0};
+                v2f16 temp4 = (v2f16) {0, 0};
+                v2f16 A, B1, B2, B3, B4;
+                for (int i = 0; i < head_size; i+=2) {
+                    A = *((v2f16*) &q[i]);
+                    B1 = *((v2f16*) &k[i]);
+                    B2 = *((v2f16*) &k[i + kv_dim]);
+                    B3 = *((v2f16*) &k[i + 2*kv_dim]);
+                    B4 = *((v2f16*) &k[i + 3*kv_dim]);
+                    temp1 += A * B1;
+                    temp2 += A * B2;
+                    temp3 += A * B3;
+                    temp4 += A * B4;
+                }
+
+                // save the score to the attention buffer
+                att[t] = (temp1[0] + temp1[1]) / sqrt_head_size;
+                if(att[t] > max_val) 
+                    max_val = att[t];
+                
+                att[t+1] = (temp2[0] + temp2[1]) / sqrt_head_size;
+                if(att[t+1] > max_val)
+                    max_val = att[t+1];
+                
+                att[t+2] = (temp3[0] + temp3[1]) / sqrt_head_size;
+                if(att[t+2] > max_val)
+                    max_val = att[t+2];
+                
+                att[t+3] = (temp4[0] + temp4[1]) / sqrt_head_size;
+                if(att[t+3] > max_val)
+                    max_val = att[t+3];
+            }
             
+            // leftover
+            while(t <= pos) {
+                // get the key vector for this head and at this timestep
+                fp16* k = args->key_cache + t * kv_dim + (h / kv_mul) * head_size;
+                // calculate the attention score as the dot product of q and k
+                
+                v2f16 temp = (v2f16) {0, 0};
+                v2f16 A,B;
+                for (int i = 0; i < head_size; i+=2) {
+                    A = *((v2f16*) &q[i]);
+                    B = *((v2f16*) &k[i]);
+                    temp += A * B;
+                }
+                fp16 score = temp[0] + temp[1];
+                
+                score /= sqrt_head_size;
+                // score *= q_rsqrt(head_size);             // non migliora le prestazioni
+
+                // save the score to the attention buffer
+                att[t] = score;
+                if(att[t] > max_val)
+                    max_val = att[t];
+                t++;
+            }
+            
+            #ifdef STATS
+            if(id==0 && pos == STEPS-1){
+                printf("Core: %d \tpos: %d \t qk product cycles: %lu\n", id, pos, pi_perf_read(PI_PERF_CYCLES)-temp_cycles);
+                temp_cycles = pi_perf_read( PI_PERF_CYCLES);
+            }
+            #endif
+
             // softmax the scores to get attention weights, from 0..pos inclusively
-            softmax_original_fp16(att, pos + 1);
+            // softmax_original_fp16(att, pos + 1);
+            fp16 sum = 0.0f;
+            for (int t = 0; t < pos+1; t++) {
+
+                #ifdef FASTEXPF
+                att[t] = (fp16) fastexp_gist_fp16((float) (att[t] - max_val));
+                #else
+                att[t] = (fp16) expf((float) (att[t] - max_val));
+                #endif
+                sum += att[t];
+            }
+
+            #ifdef STATS
+            if(id==0 && pos == STEPS-1){
+                printf("Core: %d \tpos: %d \t attention softmax cycles: %lu\n", id, pos, pi_perf_read(PI_PERF_CYCLES)-temp_cycles);
+                temp_cycles = pi_perf_read( PI_PERF_CYCLES);
+            }
+            #endif
 
             // weighted sum of the values, store back into xb
             fp16* xb = args->xb + h * head_size;
@@ -136,12 +229,19 @@ void llama2_mhsa_fp16_cl(void *llama2_mhsa_args){
                 // get the value vector for this head and at this timestep
                 fp16* v = args->value_cache + t * kv_dim + (h / kv_mul) * head_size;
                 // get the attention weight for this timestep
-                fp16 a = att[t];
+                fp16 a = att[t] / sum;
                 // accumulate the weighted value into xb
                 for (int i = 0; i < head_size; i++) {
                     xb[i] += a * v[i];
                 }
             }
+
+            #ifdef STATS
+            if(id==0 && pos == STEPS-1){
+                printf("Core: %d \tpos: %d \t att*v cycles: %lu\n", id, pos, pi_perf_read(PI_PERF_CYCLES)-temp_cycles);
+                temp_cycles = pi_perf_read(PI_PERF_CYCLES);
+            }
+            #endif
     }
 }
 

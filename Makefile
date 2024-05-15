@@ -14,7 +14,7 @@ SEQ_LEN ?= 512
 
 # other option 
 STEPS ?= 256
-TEMPERATURE ?= 0.0
+TEMPERATURE ?= 1.0
 RND_SEED ?= 100
 PROMPT ?= "Tim was very happy"
 
@@ -60,7 +60,7 @@ APP_CFLAGS += -DFASTEXPF # usa la fast expf al posto della expf standard
 APP_CFLAGS += -DQ_RSQRT
 
 APP_CFLAGS += -DOUTPUT
-APP_CFLAGS += -DSTATS=1
+APP_CFLAGS += -DSTATS
 
 include $(RULES_DIR)/pmsis_rules.mk
 

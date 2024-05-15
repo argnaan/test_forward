@@ -703,7 +703,7 @@ void encode(Tokenizer* t, char *text, int8_t bos, int8_t eos, int *tokens, int *
     if (text == NULL)
         exit(1);
     // create a temporary buffer that will store merge candidates of always two consecutive tokens
-    char* str_buffer = STR_BUFFER;
+    char* str_buffer = (char*) BUFF1;
     // *2 for concat, +1 for null terminator +2 for UTF8 (in case max_token_length is 1)
     size_t str_len = 0;
 

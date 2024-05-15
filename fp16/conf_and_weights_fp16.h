@@ -8,7 +8,7 @@
 #define SEQ_LEN 256
 #define KV_DIM 32
 #define STEPS 256
-#define TEMPERATURE 0.000f
+#define TEMPERATURE 1.000f
 #define RND_SEED 100
 
 PI_L2 char* PROMPT = "Tim was very happy";
