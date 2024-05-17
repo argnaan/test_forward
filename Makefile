@@ -49,18 +49,19 @@ endif
 APP_LDFLAGS += -lm
 
 APP_CFLAGS += -I. -I$(TRAIN_LIB)/include
-APP_CFLAGS += -DCLUSTER -DFABRIC -O3 -g3
+APP_CFLAGS += -DCLUSTER -DFABRIC -O3 -g3	
 APP_CFLAGS += -DDATA_TYPE=$(DATA_TYPE)
 
 # OTTIMIZZAZIONI: 
 
 NUM_CORES ?= 8
 APP_CFLAGS += -DNUM_CORES=$(NUM_CORES)
-APP_CFLAGS += -DFASTEXPF # usa la fast expf al posto della expf standard
+APP_CFLAGS += -DFASTEXPF		# usa la fastexpf_gist contenuta nella trainlib
+#APP_CFLAGS += -DCORRECT_SCH		# usa la correct_sch_16 di A.Belano
 APP_CFLAGS += -DQ_RSQRT
 
 APP_CFLAGS += -DOUTPUT
-APP_CFLAGS += -DSTATS
+#APP_CFLAGS += -DSTATS
 
 include $(RULES_DIR)/pmsis_rules.mk
 

@@ -48,7 +48,38 @@ void *bsearch (const void *key, const void *base0, size_t nmemb, size_t size, in
 	return (NULL);
 }
 
+#define ALPHA   0x4
+#define BETA    0x7
+#define GAMMA1  0x16b
+#define GAMMA2  0x116
 
+uint16_t correct_sch_16(uint16_t exp_sch) {
+    uint8_t mantissa,
+            res;
+
+    uint16_t res_mul_1,
+             res_add;
+
+    uint32_t res_mul_2;
+        
+    mantissa = exp_sch & 0x003F;
+    
+    if (exp_sch & 0x0040) {
+        res_mul_1 = ((uint8_t) (~((mantissa << 1))) & 0b01111111) * BETA;
+        res_add = (exp_sch & 0x007F) + GAMMA2;
+        res_mul_2 = res_mul_1 * res_add; 
+        res = ~(res_mul_2 >> 12);
+    } else {
+        res_mul_1 = (mantissa << 1) * ALPHA;
+        res_add = mantissa + GAMMA1;
+        res_mul_2 = res_mul_1 * res_add; 
+        res = res_mul_2 >> 12;
+    }
+
+    return (exp_sch & 0xFF70) | (0b01111111 & res); 
+}
+
+/*
 void softmax_original_fp16(fp16* x, int size) {
     // find max value (for numerical stability)
     fp16 max_val = x[0];
@@ -63,6 +94,8 @@ void softmax_original_fp16(fp16* x, int size) {
 
         #ifdef FASTEXPF
         x[i] = (fp16) fastexp_gist_fp16((float) (x[i] - max_val));
+        #elif defined(CORRECT_SCH)
+        x[i] = (fp16) correct_sch_16(x[i] - max_val);
         #else
         x[i] = (fp16) expf((float) (x[i] - max_val));
         #endif
@@ -74,7 +107,7 @@ void softmax_original_fp16(fp16* x, int size) {
         x[i] /= sum;
     }
 }
-
+*/
 
 void llama2_mhsa_fp16_cl(void *llama2_mhsa_args){
     struct llama2_mhsa_args_fp16* args = (struct llama2_mhsa_args_fp16*) llama2_mhsa_args;
@@ -183,13 +216,8 @@ void llama2_mhsa_fp16_cl(void *llama2_mhsa_args){
                     B = *((v2f16*) &k[i]);
                     temp += A * B;
                 }
-                fp16 score = temp[0] + temp[1];
-                
-                score /= sqrt_head_size;
-                // score *= q_rsqrt(head_size);             // non migliora le prestazioni
-
                 // save the score to the attention buffer
-                att[t] = score;
+                att[t] = ( temp[0] + temp[1] ) / sqrt_head_size;
                 if(att[t] > max_val)
                     max_val = att[t];
                 t++;
@@ -197,7 +225,7 @@ void llama2_mhsa_fp16_cl(void *llama2_mhsa_args){
             
             #ifdef STATS
             if(id==0 && pos == STEPS-1){
-                printf("Core: %d \tpos: %d \t qk product cycles: %lu\n", id, pos, pi_perf_read(PI_PERF_CYCLES)-temp_cycles);
+                // printf("Core: %d \tpos: %d \t qk product cycles: %lu\n", id, pos, pi_perf_read(PI_PERF_CYCLES)-temp_cycles);
                 temp_cycles = pi_perf_read( PI_PERF_CYCLES);
             }
             #endif
@@ -209,6 +237,8 @@ void llama2_mhsa_fp16_cl(void *llama2_mhsa_args){
 
                 #ifdef FASTEXPF
                 att[t] = (fp16) fastexp_gist_fp16((float) (att[t] - max_val));
+                #elif defined(CORRECT_SCH)
+                att[t] = (fp16) correct_sch_16((att[t] - max_val));
                 #else
                 att[t] = (fp16) expf((float) (att[t] - max_val));
                 #endif
@@ -217,28 +247,42 @@ void llama2_mhsa_fp16_cl(void *llama2_mhsa_args){
 
             #ifdef STATS
             if(id==0 && pos == STEPS-1){
-                printf("Core: %d \tpos: %d \t attention softmax cycles: %lu\n", id, pos, pi_perf_read(PI_PERF_CYCLES)-temp_cycles);
+                // printf("Core: %d \tpos: %d \t attention softmax cycles: %lu\n", id, pos, pi_perf_read(PI_PERF_CYCLES)-temp_cycles);
                 temp_cycles = pi_perf_read( PI_PERF_CYCLES);
             }
             #endif
 
             // weighted sum of the values, store back into xb
             fp16* xb = args->xb + h * head_size;
+            fp16* v = args->value_cache + (h / kv_mul) * head_size;
+            /*
             memset(xb, 0, head_size * sizeof(*xb));
+            for(int i=0; i<head_size; i++)
+                xb[i] = 0;
             for (int t = 0; t <= pos; t++) {
-                // get the value vector for this head and at this timestep
-                fp16* v = args->value_cache + t * kv_dim + (h / kv_mul) * head_size;
-                // get the attention weight for this timestep
-                fp16 a = att[t] / sum;
+                // fp16 a = att[t] / sum;
+                v2f16 a = (v2f16) {att[t] / sum, att[t] / sum};
                 // accumulate the weighted value into xb
-                for (int i = 0; i < head_size; i++) {
-                    xb[i] += a * v[i];
+                for (int i = 0; i < head_size; i+=2) {
+                    // xb[i] += a * v[i];
+                    *((v2f16*)&xb[i]) += a * *((v2f16*)&v[i]);
                 }
+                v += kv_dim;
+            }
+            */
+
+            for(int i=0 ; i < head_size ; i+=2){
+                v2f16 temp = (v2f16) {0, 0};
+                for(int t = 0; t <= pos; t++){
+                    temp += *((v2f16*)&v[i + t*kv_dim]) * (v2f16) {att[t], att[t]};
+                }
+                xb[i] = temp[0] / sum;
+                xb[i+1] = temp[1] / sum;
             }
 
             #ifdef STATS
             if(id==0 && pos == STEPS-1){
-                printf("Core: %d \tpos: %d \t att*v cycles: %lu\n", id, pos, pi_perf_read(PI_PERF_CYCLES)-temp_cycles);
+                // printf("Core: %d \tpos: %d \t att*v cycles: %lu\n", id, pos, pi_perf_read(PI_PERF_CYCLES)-temp_cycles);
                 temp_cycles = pi_perf_read(PI_PERF_CYCLES);
             }
             #endif
@@ -258,6 +302,8 @@ void rope_parallelized_fp16_cl(void* void_args){
     int head_dim = (id*2) % head_size;
     #ifdef FASTEXPF
     fp16 freq = 1.0f / fastexp_gist_fp16(9.21034037198 * head_dim / (float)head_size);
+    #elif defined(CORRECT_SCH)
+    fp16 freq = 1.0f / (fp16) correct_sch_16(9.21034037198 * head_dim / (float)head_size);
     #else
     fp16 freq = 1.0f / powf(10000.0f, head_dim/ (float)head_size);
     #endif
