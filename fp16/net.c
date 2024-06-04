@@ -18,13 +18,13 @@ PI_L1 fp16 buffer_n_cores[NUM_CORES];
 // Transformer model
 
 typedef struct {
-    int dim; // transformer dimension
-    int hidden_dim; // for ffn layers
-    int n_layers; // number of layers
-    int n_heads; // number of query heads
-    int n_kv_heads; // number of key/value heads (can be < query heads because of multiquery)
-    int vocab_size; // vocabulary size, usually 256 (byte-level)
-    int seq_len; // max sequence length
+    int dim; 		// transformer dimension
+    int hidden_dim; 	// for ffn layers
+    int n_layers; 	// number of layers
+    int n_heads; 	// number of query heads
+    int n_kv_heads; 	// number of key/value heads (can be < query heads because of multiquery)
+    int vocab_size; 	// vocabulary size, usually 256 (byte-level)
+    int seq_len; 	// max sequence length
 } Config;
 
 typedef struct {
@@ -184,6 +184,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
     token_emb_table_to_x.loc = (uint32_t) x;
     token_emb_table_to_x.size = dim*sizeof(*x);
     token_emb_table_to_x.dir = PI_CL_DMA_DIR_EXT2LOC;
+    token_emb_table_to_x.merge = 0;
     pi_cl_dma_memcpy(&token_emb_table_to_x);
 
     // trasferimento dei pesi della rmsnorm
@@ -192,11 +193,14 @@ fp16* forward(Transformer* transformer, int token, int pos) {
     rms_weight.loc = (uint32_t) BUFF4;
     rms_weight.size = dim* sizeof(*w->rms_att_weight);
     rms_weight.dir = PI_CL_DMA_DIR_EXT2LOC;
-    pi_cl_dma_memcpy(&rms_weight);       
- 
-
+    rms_weight.merge = 0;
+    pi_cl_dma_memcpy(&rms_weight);      
+    
+    
     // forward all the layers
-    for(unsigned long long l = 0; l < p->n_layers; l++) {
+    for(int l = 0; l < p->n_layers; l++) {
+    	//printf("\nEntrered forward pos= %d, l = %d\n", pos, l);
+        
         // key and value point to the k cache
         int loff = l * STEPS * kv_dim; // kv cache layer offset for convenience
         // s->k = s->key_cache + loff + pos * kv_dim;
@@ -210,11 +214,17 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         kv_weight.loc = (uint32_t) BUFF_W_2;
         kv_weight.size = dim*kv_dim*sizeof(*w->wv);
         kv_weight.dir = PI_CL_DMA_DIR_EXT2LOC;
+        kv_weight.merge = 0;
         pi_cl_dma_memcpy(&kv_weight);
 
-        // pi_cl_dma_wait(&token_emb_table_to_x);
-        pi_cl_dma_wait(&rms_weight);                // necessario
-
+        pi_cl_dma_wait(&token_emb_table_to_x);
+        pi_cl_dma_wait(&rms_weight);  
+        
+/*        printf("Check dma transf L1 e L2:\n");
+        for(int i=0;i<DIM;i++){
+        	printf("%f \t%f\n", BUFF4[i], w->rms_att_weight[i] + l*dim);
+	}*/
+	
         #ifdef STATS
         tmp = pi_perf_read (PI_PERF_CYCLES);
         #endif
@@ -225,7 +235,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         if(pos==STEPS-1)
             printf("\nforward_l%llu_rmsorm: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
         #endif
-
+	
         // qkv matmuls for this position
 
         // trasferimento dei pesi della matmul di q
@@ -234,6 +244,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         q_weight.loc = (uint32_t) BUFF_W_1;
         q_weight.size = dim*dim*sizeof(*w->wq);
         q_weight.dir = PI_CL_DMA_DIR_EXT2LOC;
+        q_weight.merge = 0;
         pi_cl_dma_memcpy(&q_weight);
         
         pi_cl_dma_wait(&kv_weight);
@@ -258,6 +269,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         kv_to_L2.loc = (uint32_t) BUFF4;
         kv_to_L2.size = kv_dim*sizeof(*s->v);
         kv_to_L2.dir = PI_CL_DMA_DIR_LOC2EXT;
+        kv_to_L2.merge = 0;
         pi_cl_dma_memcpy(&kv_to_L2);
         
 
@@ -278,8 +290,10 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         k_cache_to_L1.loc = (uint32_t) BUFF_W_1;
         k_cache_to_L1.size = kv_dim * pos * sizeof(*s->key_cache);
         k_cache_to_L1.dir = PI_CL_DMA_DIR_EXT2LOC;
-        pi_cl_dma_memcpy(&k_cache_to_L1);
-
+        k_cache_to_L1.merge = 0;
+        if( pos > 0)			// avoid 0 byte DMA transfer (break things in GAP9)
+        	pi_cl_dma_memcpy(&k_cache_to_L1);
+	
         s->k = BUFF_W_1 + kv_dim*pos;
         pi_cl_dma_wait(&kv_weight);
 
@@ -301,6 +315,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         v_cache_to_L1.loc = (uint32_t) BUFF_W_2;
         v_cache_to_L1.size = kv_dim * (pos+1) * sizeof(*s->value_cache);
         v_cache_to_L1.dir = PI_CL_DMA_DIR_EXT2LOC;
+        v_cache_to_L1.merge = 0;
         pi_cl_dma_memcpy(&v_cache_to_L1);
         
         #ifdef STATS
@@ -317,7 +332,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         ra.kv_dim = kv_dim;
 
         pi_cl_team_fork(NUM_CORES, rope_parallelized_fp16_cl, &ra);
-
+      
         #ifdef STATS
         if(pos==STEPS-1)
             printf("forward_l%llu_RoPE: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
@@ -345,7 +360,8 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         mhsa_args.n_heads = p->n_heads;
         mhsa_args.steps = STEPS;
 
-        pi_cl_dma_wait(&k_cache_to_L1);
+        if (pos > 0)
+        	pi_cl_dma_wait(&k_cache_to_L1);
         pi_cl_dma_wait(&v_cache_to_L1);
 
         #ifdef STATS
@@ -366,6 +382,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         wo_to_L1.ext = (uint32_t) (w->wo + l*dim*dim);
         wo_to_L1.size = dim * dim * sizeof(*w->wo);
         wo_to_L1.dir = PI_CL_DMA_DIR_EXT2LOC;
+        wo_to_L1.merge = 0;
         pi_cl_dma_memcpy(&wo_to_L1);
         
         s->xb2 = BUFF3;
@@ -375,6 +392,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         rms_ffn_weight_to_L1.ext = (uint32_t) (w->rms_ffn_weight + l*dim);
         rms_ffn_weight_to_L1.size = dim * sizeof(*w->rms_ffn_weight);
         rms_ffn_weight_to_L1.dir = PI_CL_DMA_DIR_EXT2LOC;
+        rms_ffn_weight_to_L1.merge = 0;
         pi_cl_dma_memcpy(&rms_ffn_weight_to_L1);
 
         pi_cl_dma_copy_t mm1_ffn_weight_to_L1;
@@ -382,6 +400,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         mm1_ffn_weight_to_L1.ext = (uint32_t) (w->w1 + l*dim*hidden_dim);
         mm1_ffn_weight_to_L1.size = dim * hidden_dim * sizeof(*w->w1);
         mm1_ffn_weight_to_L1.dir = PI_CL_DMA_DIR_EXT2LOC;
+        mm1_ffn_weight_to_L1.merge = 0;
         pi_cl_dma_memcpy(&mm1_ffn_weight_to_L1);
 
         // final matmul to get the output of the attention
@@ -438,6 +457,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         mm2_ffn_weight_to_L1.ext = (uint32_t) (w->w3 + l*dim*hidden_dim);
         mm2_ffn_weight_to_L1.size = dim * hidden_dim * sizeof(*w->w3);
         mm2_ffn_weight_to_L1.dir = PI_CL_DMA_DIR_EXT2LOC;
+        mm2_ffn_weight_to_L1.merge = 0;
         pi_cl_dma_memcpy(&mm2_ffn_weight_to_L1);
 
         // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
@@ -496,7 +516,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
 
         matmul(s->xb, s->hb, BUFF_W_2, hidden_dim, dim);
         // matmul(s->xb, s->hb, w->w2 + l*dim*hidden_dim, hidden_dim, dim);
-        
+
         #ifdef STATS
         if(pos==STEPS-1)
             printf("forward_l%llu_ffn_mm3: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
@@ -527,11 +547,13 @@ fp16* forward(Transformer* transformer, int token, int pos) {
     mm_weights_to_BUFF_W_1.loc = (uint32_t) BUFF_W_1;
 	mm_weights_to_BUFF_W_1.size = dim * part * sizeof(*w->wcls);
 	mm_weights_to_BUFF_W_1.dir = PI_CL_DMA_DIR_EXT2LOC;
+	mm_weights_to_BUFF_W_1.merge = 0;
     pi_cl_dma_memcpy(&mm_weights_to_BUFF_W_1);
 
     mm_weights_to_BUFF_W_2.loc = (uint32_t) BUFF_W_2;
     mm_weights_to_BUFF_W_2.size = dim * part * sizeof(*w->wcls);
     mm_weights_to_BUFF_W_2.dir = PI_CL_DMA_DIR_EXT2LOC;
+    mm_weights_to_BUFF_W_2.merge = 0;
     
     // final rmsnorm
 
@@ -566,10 +588,8 @@ fp16* forward(Transformer* transformer, int token, int pos) {
     if(pos==STEPS-1)
         printf("forward_final_matmul: %lu\n\n", pi_perf_read (PI_PERF_CYCLES) - tmp);
     #endif
-
-    // classifier into logits
-    // matmul(s->logits, s->xb, w->wcls, p->dim, p->vocab_size);
-
+	
+    // printf("Forward pos %d done\n", pos);
     return s->logits;
 }
 
@@ -589,7 +609,7 @@ typedef struct {
     TokenIndex *sorted_vocab;
     int vocab_size;
     unsigned int max_token_length;
-    unsigned char byte_pieces[512]; // stores all single-byte strings
+    char byte_pieces[512]; // stores all single-byte strings
 } Tokenizer;
 
 void build_tokenizer(Tokenizer* t, int vocab_size) {
@@ -607,7 +627,7 @@ void build_tokenizer(Tokenizer* t, int vocab_size) {
     int len;
     int j=0;
     for (int i = 0; i < vocab_size; i++) {
-        t->vocab[i] = &VOCAB_DATA[j];
+        t->vocab[i] = (char*) &VOCAB_DATA[j];
         while(VOCAB_DATA[j] != '\0' && i < vocab_size-1)
             j++;
         j++;
@@ -652,9 +672,9 @@ void safe_printf(char *piece) {
     if (piece[0] == '\0') { return; }
     if (piece[1] == '\0') {
         unsigned char byte_val = piece[0];
-        if (!(isprint(byte_val) || isspace(byte_val))) {
+       /* if (!(isprint(byte_val) || isspace(byte_val))) {
             return; // bad byte, don't print it
-        }
+        }*/
     }
     printf("%s", piece);
 }
@@ -678,7 +698,7 @@ void encode(Tokenizer* t, char *text, int8_t bos, int8_t eos, int *tokens, int *
     // create a temporary buffer that will store merge candidates of always two consecutive tokens
     char* str_buffer = STR_BUFFER;
     // *2 for concat, +1 for null terminator +2 for UTF8 (in case max_token_length is 1)
-    size_t str_len = 0;
+     int str_len = 0;
 
     // start at 0 tokens
     *n_tokens = 0;
@@ -988,7 +1008,9 @@ void net_step(){
         
         #ifdef OUTPUT
         char* piece = decode(&tokenizer, token, next);
+        printf("Step %d: ", pos);
         safe_printf(piece);
+        printf("\n");
         #endif
 
         #ifdef STATS

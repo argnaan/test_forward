@@ -25,7 +25,7 @@ get_golden:
 	cd $(DATA_TYPE)/utils && gcc run.c -o run -lm -O3 
 	python3 $(DATA_TYPE)/utils/GM.py --weights_path $(WEIGHTS_PATH) --dim $(DIM) --hidden_dim $(HIDDEN_DIM) --n_layers $(N_LAYERS) --n_heads $(N_HEADS) --n_kv_heads $(N_KV_HEADS) --vocab_size $(VOCAB_SIZE) --seq_len $(SEQ_LEN) --steps $(STEPS) --temperature $(TEMPERATURE) --rnd_seed $(RND_SEED) --prompt $(PROMPT)
 
-TRAIN_LIB= /home/andrea/PULP-TrainLib-Tutorial/pulp-trainlib/lib
+TRAIN_LIB= /home/andrea/pulp-trainlib/lib
 TRAIN_LIB_SRCS=$(TRAIN_LIB)/sources
 
 APP_SRCS = main.c
@@ -47,6 +47,7 @@ endif
 endif
 
 APP_LDFLAGS += -lm
+APP_LDFLAGS += -lc
 
 APP_CFLAGS += -I. -I$(TRAIN_LIB)/include
 APP_CFLAGS += -DCLUSTER -DFABRIC -O3 -g3	

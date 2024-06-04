@@ -11,7 +11,7 @@
 #define TEMPERATURE 1.000f
 #define RND_SEED 100
 
-PI_L2 char* PROMPT = "Tim was very happy";
+PI_L2 char PROMPT[] = "Tim was very happy";
 PI_L2 int PROMPT_TOKENS[21];
 // Allocazioni buffer in L1
 PI_L1 fp16 BUFF1[64];

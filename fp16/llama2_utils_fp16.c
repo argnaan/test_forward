@@ -116,7 +116,7 @@ void llama2_mhsa_fp16_cl(void *llama2_mhsa_args){
     int kv_dim = args->kv_dim;
     int kv_mul = args->kv_mul;
     int head_size = args->head_size;
-    int n_heads = args->n_heads;
+    uint32_t n_heads = (uint32_t) args->n_heads;
     int STEPS = args->steps;
     const fp16 sqrt_head_size = (fp16) sqrtf(head_size);
 
@@ -132,7 +132,7 @@ void llama2_mhsa_fp16_cl(void *llama2_mhsa_args){
         temp_cycles = pi_perf_read(PI_PERF_CYCLES);
     #endif
 
-    for (int h = start; h < stop; h++) {
+    for (uint32_t h = start; h < stop; h++) {
             // get the query vector for this head
             fp16* q = args->q + h * head_size;
             // attention scores for this head
@@ -154,8 +154,8 @@ void llama2_mhsa_fp16_cl(void *llama2_mhsa_args){
                 }
                 fp16 score = temp[0] + temp[1];
                 
-                score /= (fp16) sqrtf(head_size);
-                // score *= q_rsqrt(head_size);             // non migliora le prestazioni
+                //score /= (fp16) sqrtf(head_size);
+                score *= q_rsqrt(head_size);             // non migliora le prestazioni
 
                 // save the score to the attention buffer
                 att[t] = score;
@@ -237,8 +237,6 @@ void llama2_mhsa_fp16_cl(void *llama2_mhsa_args){
 
                 #ifdef FASTEXPF
                 att[t] = (fp16) fastexp_gist_fp16((float) (att[t] - max_val));
-                #elif defined(CORRECT_SCH)
-                att[t] = (fp16) correct_sch_16((att[t] - max_val));
                 #else
                 att[t] = (fp16) expf((float) (att[t] - max_val));
                 #endif
@@ -302,8 +300,6 @@ void rope_parallelized_fp16_cl(void* void_args){
     int head_dim = (id*2) % head_size;
     #ifdef FASTEXPF
     fp16 freq = 1.0f / fastexp_gist_fp16(9.21034037198 * head_dim / (float)head_size);
-    #elif defined(CORRECT_SCH)
-    fp16 freq = 1.0f / (fp16) correct_sch_16(9.21034037198 * head_dim / (float)head_size);
     #else
     fp16 freq = 1.0f / powf(10000.0f, head_dim/ (float)head_size);
     #endif
@@ -312,10 +308,10 @@ void rope_parallelized_fp16_cl(void* void_args){
     fp16 fcr, fci;
 
     if(val <= 200){
-        fcr = (fp16) cosf((float) val);
-        fci = (fp16) sinf((float) val);
+      fcr = (fp16) cosf((float) val);
+      fci = (fp16) sinf((float) val);
     } else
-       cordic_cos_sin_fp16(val, &fcr, &fci);
+    	cordic_cos_sin_fp16(val, &fcr, &fci);
 
     for(int i=id*2; i < dim ; i+=2*NUM_CORES){
         int rotn = i < kv_dim ? 2 : 1; // how many vectors? 2 = q & k, 1 = q only

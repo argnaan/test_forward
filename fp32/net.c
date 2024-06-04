@@ -226,6 +226,7 @@ float* forward(Transformer* transformer, int token, int pos) {
     token_emb_table_to_x.loc = (uint32_t) x;
     token_emb_table_to_x.size = dim*sizeof(*x);
     token_emb_table_to_x.dir = PI_CL_DMA_DIR_EXT2LOC;
+    token_emb_table_to_x.merge = 0;
     pi_cl_dma_memcpy(&token_emb_table_to_x);
 
     // trasferimento dei pesi della rmsnorm
@@ -234,6 +235,7 @@ float* forward(Transformer* transformer, int token, int pos) {
     rms_weight.loc = (uint32_t) BUFF4;
     rms_weight.size = dim* sizeof(*w->rms_att_weight);
     rms_weight.dir = PI_CL_DMA_DIR_EXT2LOC;
+    rms_weight.merge = 0;
     pi_cl_dma_memcpy(&rms_weight);       
  
 
@@ -252,6 +254,7 @@ float* forward(Transformer* transformer, int token, int pos) {
         kv_weight.loc = (uint32_t) BUFF_W_2;
         kv_weight.size = dim*kv_dim*sizeof(*w->wv);
         kv_weight.dir = PI_CL_DMA_DIR_EXT2LOC;
+        kv_weight.merge = 0;        
         pi_cl_dma_memcpy(&kv_weight);
 
         pi_cl_dma_wait(&token_emb_table_to_x);
@@ -273,6 +276,7 @@ float* forward(Transformer* transformer, int token, int pos) {
         q_weight.loc = (uint32_t) BUFF_W_1;
         q_weight.size = dim*dim*sizeof(*w->wq);
         q_weight.dir = PI_CL_DMA_DIR_EXT2LOC;
+        q_weight.merge = 0;
         pi_cl_dma_memcpy(&q_weight);
         
         pi_cl_dma_wait(&kv_weight);
@@ -294,6 +298,7 @@ float* forward(Transformer* transformer, int token, int pos) {
         kv_to_L2.loc = (uint32_t) BUFF4;
         kv_to_L2.size = kv_dim*sizeof(*s->v);
         kv_to_L2.dir = PI_CL_DMA_DIR_LOC2EXT;
+        kv_to_L2.merge = 0;
         pi_cl_dma_memcpy(&kv_to_L2);
         
 
@@ -517,9 +522,11 @@ float* forward(Transformer* transformer, int token, int pos) {
 
         pi_cl_team_fork(NUM_CORES, pulp_swiglu_fp32_cl, &sa);
 
-        if(pos==STEPS-1 && STATS)
+	#ifdef STATS
+        if(pos==STEPS-1)
             printf("forward_l%llu_ffn_SwiGLU: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
-
+	#endif
+	
         if(l < p->n_layers - 1){
             rms_weight.ext = (uint32_t) (w->rms_att_weight + (l+1)*dim);
             pi_cl_dma_memcpy(&rms_weight);
@@ -532,8 +539,10 @@ float* forward(Transformer* transformer, int token, int pos) {
 
         matmul(s->xb, s->hb, BUFF_W_2, hidden_dim, dim);
         // matmul(s->xb, s->hb, w->w2 + l*dim*hidden_dim, hidden_dim, dim);
-        if(pos==STEPS-1 && STATS)
+        #ifdef STATS
+        if(pos==STEPS-1)
             printf("forward_l%llu_ffn_mm3: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
+        #endif
         
         // residual connection
         vsa.op_1 = s->xb;         // BUFF2
@@ -545,8 +554,10 @@ float* forward(Transformer* transformer, int token, int pos) {
 
         pi_cl_team_fork(NUM_CORES, vect_sum, &vsa);
 
-        if(pos==STEPS-1 && STATS)
+	#ifdef STATS
+        if(pos==STEPS-1)
             printf("forward_l%llu_final_residual_conn: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
+        #endif
     }
     
     int mm_div = 4;   // deve essere un divisore di vocab_size
@@ -569,9 +580,11 @@ float* forward(Transformer* transformer, int token, int pos) {
     tmp = pi_perf_read (PI_PERF_CYCLES);
 
     rmsnorm_parallelized_fp32(s->xb, x, w->rms_final_weight, buffer_n_cores, dim);
-
-    if(pos==STEPS-1 && STATS)
+	
+    #ifdef STATS
+    if(pos==STEPS-1)
         printf("\nforward_final_rmsnorm: %lu\n", pi_perf_read (PI_PERF_CYCLES) - tmp);
+    #endif
     
     tmp = pi_perf_read (PI_PERF_CYCLES);
 
@@ -590,10 +603,11 @@ float* forward(Transformer* transformer, int token, int pos) {
         pi_cl_dma_wait(&mm_weights_to_BUFF_W_2);
         matmul(s->logits+(i+1)*part, s->xb, BUFF_W_2, p->dim, part);
     }
-
-    if(pos==STEPS-1 && STATS)
+	
+    #ifdef STATS
+    if(pos==STEPS-1)
         printf("forward_final_matmul: %lu\n\n", pi_perf_read (PI_PERF_CYCLES) - tmp);
-
+    #endif 
     // classifier into logits
     // matmul(s->logits, s->xb, w->wcls, p->dim, p->vocab_size);
 
@@ -985,10 +999,11 @@ void net_step(){
     tmp = pi_perf_read (PI_PERF_CYCLES);
 
     encode(&tokenizer, PROMPT, 1, 0, prompt_tokens, &num_prompt_tokens);
-
-    if(STATS)
+	
+    #ifdef STATS
         printf("encode: %lu\n", pi_perf_read (PI_PERF_CYCLES) - tmp);
-
+    #endif 
+    
     token = prompt_tokens[0];
 
 
@@ -999,7 +1014,7 @@ void net_step(){
         if(pos < num_prompt_tokens -1)
             next = prompt_tokens[pos+1];
         else{
-            next = sample(&sampler, log, pos==STEPS-1 && STATS);
+            next = sample(&sampler, log, pos==STEPS-1);
         }
         
         /*
@@ -1010,9 +1025,11 @@ void net_step(){
         
         char* piece = decode(&tokenizer, token, next);
 
-        if(pos==STEPS-1 && STATS)
+	#ifdef STATS
+        if(pos==STEPS-1)
             printf("decode: %lu\n\n\n", pi_perf_read( PI_PERF_CYCLES)-tmp);
-
+	#endif 
+	
         token = next;
 
         safe_printf(piece);
