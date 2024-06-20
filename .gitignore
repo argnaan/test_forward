@@ -8,3 +8,5 @@ utils/run
 fp16/utils/genWeights
 fp32/utils/genWeights
 dis.S
+build/
+

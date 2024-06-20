@@ -184,8 +184,10 @@ fp16* forward(Transformer* transformer, int token, int pos) {
     token_emb_table_to_x.loc = (uint32_t) x;
     token_emb_table_to_x.size = dim*sizeof(*x);
     token_emb_table_to_x.dir = PI_CL_DMA_DIR_EXT2LOC;
-    token_emb_table_to_x.merge = 0;
+    token_emb_table_to_x.merge = 1;
     pi_cl_dma_memcpy(&token_emb_table_to_x);
+    
+    
 
     // trasferimento dei pesi della rmsnorm
     pi_cl_dma_copy_t rms_weight;
@@ -193,7 +195,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
     rms_weight.loc = (uint32_t) BUFF4;
     rms_weight.size = dim* sizeof(*w->rms_att_weight);
     rms_weight.dir = PI_CL_DMA_DIR_EXT2LOC;
-    rms_weight.merge = 0;
+    rms_weight.merge = 1;
     pi_cl_dma_memcpy(&rms_weight);      
     
     
@@ -214,26 +216,26 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         kv_weight.loc = (uint32_t) BUFF_W_2;
         kv_weight.size = dim*kv_dim*sizeof(*w->wv);
         kv_weight.dir = PI_CL_DMA_DIR_EXT2LOC;
-        kv_weight.merge = 0;
+        kv_weight.merge = 1;
         pi_cl_dma_memcpy(&kv_weight);
 
         pi_cl_dma_wait(&token_emb_table_to_x);
         pi_cl_dma_wait(&rms_weight);  
         
-/*        printf("Check dma transf L1 e L2:\n");
+       /*printf("Check dma transf L1 e L2:\n");
         for(int i=0;i<DIM;i++){
-        	printf("%f \t%f\n", BUFF4[i], w->rms_att_weight[i] + l*dim);
+        	printf("%f \t%f\n", BUFF4[i], *(w->rms_att_weight + l*dim + i));
 	}*/
 	
         #ifdef STATS
         tmp = pi_perf_read (PI_PERF_CYCLES);
         #endif
-
+	
         rmsnorm_parallelized_fp16(s->xb, x, BUFF4, buffer_n_cores, dim);
-
+	
         #ifdef STATS
         if(pos==STEPS-1)
-            printf("\nforward_l%llu_rmsorm: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
+            printf("\nforward_l%d_rmsorm: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
         #endif
 	
         // qkv matmuls for this position
@@ -244,7 +246,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         q_weight.loc = (uint32_t) BUFF_W_1;
         q_weight.size = dim*dim*sizeof(*w->wq);
         q_weight.dir = PI_CL_DMA_DIR_EXT2LOC;
-        q_weight.merge = 0;
+        q_weight.merge = 1;
         pi_cl_dma_memcpy(&q_weight);
         
         pi_cl_dma_wait(&kv_weight);
@@ -257,7 +259,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
 
         #ifdef STATS
         if(pos==STEPS-1)
-            printf("forward_l%llu_matmul_v: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
+            printf("forward_l%d_matmul_v: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
         #endif
 
         kv_weight.ext = (uint32_t) (w->wk + l*dim*kv_dim);
@@ -269,7 +271,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         kv_to_L2.loc = (uint32_t) BUFF4;
         kv_to_L2.size = kv_dim*sizeof(*s->v);
         kv_to_L2.dir = PI_CL_DMA_DIR_LOC2EXT;
-        kv_to_L2.merge = 0;
+        kv_to_L2.merge = 1;
         pi_cl_dma_memcpy(&kv_to_L2);
         
 
@@ -281,7 +283,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         
         #ifdef STATS
         if(pos==STEPS-1)
-            printf("forward_l%llu_matmul_q: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
+            printf("forward_l%d_matmul_q: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
         #endif
 
         // spostamento della key cache in BUFF_W_1 (tranne per la possima posizione)
@@ -290,7 +292,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         k_cache_to_L1.loc = (uint32_t) BUFF_W_1;
         k_cache_to_L1.size = kv_dim * pos * sizeof(*s->key_cache);
         k_cache_to_L1.dir = PI_CL_DMA_DIR_EXT2LOC;
-        k_cache_to_L1.merge = 0;
+        k_cache_to_L1.merge = 1;
         if( pos > 0)			// avoid 0 byte DMA transfer (break things in GAP9)
         	pi_cl_dma_memcpy(&k_cache_to_L1);
 	
@@ -305,7 +307,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         
         #ifdef STATS
         if(pos==STEPS-1)
-            printf("forward_l%llu_matmul_k: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
+            printf("forward_l%d_matmul_k: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
         #endif
 
         // spostamento della value cache in BUFF_W_2
@@ -315,7 +317,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         v_cache_to_L1.loc = (uint32_t) BUFF_W_2;
         v_cache_to_L1.size = kv_dim * (pos+1) * sizeof(*s->value_cache);
         v_cache_to_L1.dir = PI_CL_DMA_DIR_EXT2LOC;
-        v_cache_to_L1.merge = 0;
+        v_cache_to_L1.merge = 1;
         pi_cl_dma_memcpy(&v_cache_to_L1);
         
         #ifdef STATS
@@ -335,7 +337,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
       
         #ifdef STATS
         if(pos==STEPS-1)
-            printf("forward_l%llu_RoPE: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
+            printf("forward_l%d_RoPE: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
         #endif
 
         // trasferimento del vettore k nella key cache
@@ -372,7 +374,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
 
         #ifdef STATS
         if(pos==STEPS-1)
-            printf("forward_l%llu_mhsa: %lu\n", l, pi_perf_read(PI_PERF_CYCLES) - tmp);
+            printf("forward_l%d_mhsa: %lu\n", l, pi_perf_read(PI_PERF_CYCLES) - tmp);
         #endif
 
         pi_cl_dma_wait(&kv_to_L2);
@@ -382,7 +384,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         wo_to_L1.ext = (uint32_t) (w->wo + l*dim*dim);
         wo_to_L1.size = dim * dim * sizeof(*w->wo);
         wo_to_L1.dir = PI_CL_DMA_DIR_EXT2LOC;
-        wo_to_L1.merge = 0;
+        wo_to_L1.merge = 1;
         pi_cl_dma_memcpy(&wo_to_L1);
         
         s->xb2 = BUFF3;
@@ -392,7 +394,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         rms_ffn_weight_to_L1.ext = (uint32_t) (w->rms_ffn_weight + l*dim);
         rms_ffn_weight_to_L1.size = dim * sizeof(*w->rms_ffn_weight);
         rms_ffn_weight_to_L1.dir = PI_CL_DMA_DIR_EXT2LOC;
-        rms_ffn_weight_to_L1.merge = 0;
+        rms_ffn_weight_to_L1.merge = 1;
         pi_cl_dma_memcpy(&rms_ffn_weight_to_L1);
 
         pi_cl_dma_copy_t mm1_ffn_weight_to_L1;
@@ -400,7 +402,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         mm1_ffn_weight_to_L1.ext = (uint32_t) (w->w1 + l*dim*hidden_dim);
         mm1_ffn_weight_to_L1.size = dim * hidden_dim * sizeof(*w->w1);
         mm1_ffn_weight_to_L1.dir = PI_CL_DMA_DIR_EXT2LOC;
-        mm1_ffn_weight_to_L1.merge = 0;
+        mm1_ffn_weight_to_L1.merge = 1;
         pi_cl_dma_memcpy(&mm1_ffn_weight_to_L1);
 
         // final matmul to get the output of the attention
@@ -414,7 +416,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         
         #ifdef STATS
         if(pos==STEPS-1)
-            printf("forward_l%llu_att_mm: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
+            printf("forward_l%d_att_mm: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
         #endif
 
         // residual connection back into x
@@ -432,7 +434,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
 
         #ifdef STATS
         if(pos==STEPS-1)
-            printf("forward_l%llu_residual_conn: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
+            printf("forward_l%d_residual_conn: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
         #endif
         // ffn rmsnorm
         pi_cl_dma_wait(&rms_ffn_weight_to_L1);
@@ -446,7 +448,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
 
         #ifdef STATS
         if(pos==STEPS-1)
-            printf("forward_l%llu_ffn_rmsnorm: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
+            printf("forward_l%d_ffn_rmsnorm: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
         #endif
 
         s->hb = BUFF3;
@@ -457,7 +459,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         mm2_ffn_weight_to_L1.ext = (uint32_t) (w->w3 + l*dim*hidden_dim);
         mm2_ffn_weight_to_L1.size = dim * hidden_dim * sizeof(*w->w3);
         mm2_ffn_weight_to_L1.dir = PI_CL_DMA_DIR_EXT2LOC;
-        mm2_ffn_weight_to_L1.merge = 0;
+        mm2_ffn_weight_to_L1.merge = 1;
         pi_cl_dma_memcpy(&mm2_ffn_weight_to_L1);
 
         // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
@@ -469,7 +471,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
 
         #ifdef STATS
         if(pos==STEPS-1)
-            printf("forward_l%llu_ffn_mm1: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
+            printf("forward_l%d_ffn_mm1: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
         #endif
 
         mm1_ffn_weight_to_L1.ext = (uint32_t) (w->w2 + l*dim*hidden_dim);
@@ -482,7 +484,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
         
         #ifdef STATS
         if(pos==STEPS-1)
-            printf("forward_l%llu_ffn_mm2: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
+            printf("forward_l%d_ffn_mm2: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
         #endif
 
         // matmul(s->hb, s->xb, w->w1 + l*dim*hidden_dim, dim, hidden_dim);
@@ -501,7 +503,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
 
         #ifdef STATS
         if(pos==STEPS-1)
-            printf("forward_l%llu_ffn_SwiGLU: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
+            printf("forward_l%d_ffn_SwiGLU: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
         #endif
 
         if(l < p->n_layers - 1){
@@ -519,7 +521,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
 
         #ifdef STATS
         if(pos==STEPS-1)
-            printf("forward_l%llu_ffn_mm3: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
+            printf("forward_l%d_ffn_mm3: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
         #endif
 
         // residual connection
@@ -534,7 +536,7 @@ fp16* forward(Transformer* transformer, int token, int pos) {
 
         #ifdef STATS
         if(pos==STEPS-1)
-            printf("forward_l%llu_final_residual_conn: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
+            printf("forward_l%d_final_residual_conn: %lu\n", l, pi_perf_read (PI_PERF_CYCLES) - tmp);
         #endif
     }
     
@@ -547,13 +549,13 @@ fp16* forward(Transformer* transformer, int token, int pos) {
     mm_weights_to_BUFF_W_1.loc = (uint32_t) BUFF_W_1;
 	mm_weights_to_BUFF_W_1.size = dim * part * sizeof(*w->wcls);
 	mm_weights_to_BUFF_W_1.dir = PI_CL_DMA_DIR_EXT2LOC;
-	mm_weights_to_BUFF_W_1.merge = 0;
+	mm_weights_to_BUFF_W_1.merge = 1;
     pi_cl_dma_memcpy(&mm_weights_to_BUFF_W_1);
 
     mm_weights_to_BUFF_W_2.loc = (uint32_t) BUFF_W_2;
     mm_weights_to_BUFF_W_2.size = dim * part * sizeof(*w->wcls);
     mm_weights_to_BUFF_W_2.dir = PI_CL_DMA_DIR_EXT2LOC;
-    mm_weights_to_BUFF_W_2.merge = 0;
+    mm_weights_to_BUFF_W_2.merge = 1;
     
     // final rmsnorm
 
@@ -984,14 +986,14 @@ void net_step(){
     tmp = pi_perf_read (PI_PERF_CYCLES);
 
     encode(&tokenizer, PROMPT, 1, 0, prompt_tokens, &num_prompt_tokens);
-
+    
     #ifdef STATS
     printf("encode: %lu\n", pi_perf_read (PI_PERF_CYCLES) - tmp);
     #endif
 
     token = prompt_tokens[0];
     for(int pos = 0; pos < steps; pos++ ) {
-
+	
         log = forward(&transformer, token, pos);
         
         if(pos < num_prompt_tokens -1)
@@ -1006,12 +1008,13 @@ void net_step(){
         */
         tmp = pi_perf_read (PI_PERF_CYCLES);
         
-        #ifdef OUTPUT
         char* piece = decode(&tokenizer, token, next);
-        printf("Step %d: ", pos);
+	
+	//printf("pos: %d \tnext: %d \tpiece: %s \t safe_print: ", pos, next, piece); 
+        #ifdef OUTPUT
         safe_printf(piece);
-        printf("\n");
         #endif
+        //printf("\n");
 
         #ifdef STATS
         if(pos==STEPS-1)

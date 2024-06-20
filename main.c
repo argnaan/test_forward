@@ -29,26 +29,34 @@
 *  Configures cluster, then calls net_step()
 */
 int main () {
-
-  printf("\nHello there.\nConfiguring cluster..\n");
+  // printf("\nHello there.\nConfiguring cluster..\n");
   // Configure cluster
   struct pi_device cluster_dev;
   struct pi_cluster_conf cl_conf;
   struct pi_cluster_task cl_task;
   
-  
   pi_cluster_conf_init(&cl_conf);
+  
+  cl_conf.cc_stack_size = 8000;
+  
   pi_open_from_conf(&cluster_dev, &cl_conf);
   if (pi_cluster_open(&cluster_dev))
   {
       return -1;
   }
+  
+  
+int res1 = pi_freq_set(PI_FREQ_DOMAIN_FC, 370*1000*1000);
+int res2 = pi_freq_set(PI_FREQ_DOMAIN_CL, 370*1000*1000);
+int res3 = pi_freq_set(PI_FREQ_DOMAIN_PERIPH, 370*1000*1000);
 
-  printf("\nLaunching net.c...\n\n");
+printf("res: %d, %d, %d\n", res1, res2, res3);
+
+ //  printf("\nLaunching net.c...\n\n");
   pi_cluster_send_task_to_cl(&cluster_dev, pi_cluster_task(&cl_task, net_step, NULL));
 
 
-  printf("\nnet.c successful!\n");
+ //  printf("\nnet.c successful!\n");
   pi_cluster_close(&cluster_dev);
 
   pmsis_exit(0);

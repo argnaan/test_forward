@@ -61,8 +61,8 @@ target_compile_options(${TARGET_NAME} PRIVATE "-DDATA_TYPE=${DATA_TYPE}")
 target_compile_options(${TARGET_NAME} PRIVATE "-DFASTEXPF")
 target_compile_options(${TARGET_NAME} PRIVATE "-DQ_RSQRT")
 
-target_compile_options(${TARGET_NAME} PRIVATE "-DOUTPUT")
-target_compile_options(${TARGET_NAME} PRIVATE "-DSTATS")
+#target_compile_options(${TARGET_NAME} PRIVATE "-DOUTPUT")
+#target_compile_options(${TARGET_NAME} PRIVATE "-DSTATS")
 list(APPEND TARGET_CFLAGS -O3)
 
 ###############################################################################
